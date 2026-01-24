@@ -304,7 +304,7 @@ static int set_hard_mute(struct si470x_device *radio, bool val)
         radio->registers[POWERCFG] &= ~POWERCFG_DMUTE;
     else
         radio->registers[POWERCFG] |= POWERCFG_DMUTE;
-    
+
     return si470x_set_register(radio, POWERCFG);
 }
 
@@ -528,7 +528,7 @@ int si470x_start(struct si470x_device *radio)
     }
 
     mutex_unlock(&radio->lock);
-	
+
 done:
 	return retval;
 }
@@ -1119,12 +1119,13 @@ static int si470x_vidioc_s_tuner(struct file *file, void *priv,
 		__func__, tuner->rangehigh, top_band);
     radio->recv_conf.band_high_limit = top_band;
 
-    if (bottom_band == 8750 && top_band == 10800)
+    if (bottom_band == 8750 && top_band == 10800) {
         si470x_set_band(radio, 0);
-    else if (bottom_band == 7600 && top_band == 10800)
+	} else if (bottom_band == 7600 && top_band == 10800) {
         si470x_set_band(radio, 1);
-    else if (bottom_band == 7600 && top_band == 9500)
+	} else if (bottom_band == 7600 && top_band == 9500) {
         si470x_set_band(radio, 1);
+	}
 
 	/* mono/stereo selector */
 	switch (tuner->audmode) {
@@ -1192,7 +1193,7 @@ static int si470x_vidioc_s_frequency(struct file *file, void *priv,
 
 	radio->seek_tune_status = TUNE_PENDING;
 
-    retval = si470x_set_freq(radio, freq->frequency);    
+    retval = si470x_set_freq(radio, freq->frequency);
 
 	/* save the current frequency if tune is successful. */
 	if (retval > 0) {
@@ -1238,7 +1239,7 @@ static int si470x_vidioc_s_hw_freq_seek(struct file *file, void *priv,
 		dir = SRCH_DIR_DOWN;
 
 	radio->is_search_cancelled = false;
-    
+
 	if (radio->g_search_mode == SEEK) {
 		/* seek */
 		FMDERR("starting seek\n");
@@ -1325,7 +1326,7 @@ static int si470x_vidioc_dqbuf(struct file *file, void *priv,
         FMDERR("Failed to copy %d bytes of data\n", retval);
         return -EAGAIN;
     }
-    
+
     return retval;
 }
 
@@ -1390,7 +1391,7 @@ static int si470x_vidioc_s_ctrl(struct file *file, void *priv,
     }
 
     pr_err("%s: ctrl->id = 0x%x, ctrl->value = 0x%x\n", __func__, ctrl->id, ctrl->value);
-    
+
 
     switch (ctrl->id) {
     case V4L2_CID_PRIVATE_SILABS_STATE:

@@ -17,7 +17,7 @@
 #include "msm_camera_i2c.h"
 #include "msm_camera_io_util.h"
 #include "msm_cci.h"
-#include "msm_sensor.h"
+#include "../msm_sensor.h"
 
 #define QSEECOM_SBUFF_SIZE      SZ_128K
 #define MAX_TA_NAME             32

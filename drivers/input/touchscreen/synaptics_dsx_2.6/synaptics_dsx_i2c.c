@@ -101,7 +101,7 @@ int synaptics_dsx_get_dt_coords(struct device *dev, char *name,
 		printk("[synaptics] %s panel_mix = %d, panel_miny = %d\n", __func__, pdata->panel_minx,
 		                                                                     pdata->panel_miny);
 		printk("[synaptics] %s panel_maxx = %d, panel_maxy = %d\n", __func__, pdata->panel_maxx,
-		                                                                     pdata->panel_maxy);                                                                 
+		                                                                     pdata->panel_maxy);
 	} else if (strcmp(name, "synaptics,display-coords") == 0) {
 		pdata->disp_minx = coords[0];
 		pdata->disp_miny = coords[1];
@@ -110,7 +110,7 @@ int synaptics_dsx_get_dt_coords(struct device *dev, char *name,
 		printk("[synaptics] %s disp_minx = %d, disp_miny = %d\n", __func__, pdata->disp_minx,
 		                                                                     pdata->disp_miny);
 		printk("[synaptics] %s disp_maxx = %d, disp_maxy = %d\n", __func__, pdata->disp_maxx,
-		                                                                     pdata->disp_maxy);                                                                  
+		                                                                     pdata->disp_maxy);
 	} else {
 		dev_err(dev, "unsupported property %s\n", name);
 		return -EINVAL;
@@ -132,14 +132,14 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 			"synaptics,reset-gpio", 0, &bdata->reset_flags);
 	bdata->irq_gpio = of_get_named_gpio_flags(np,
 			"synaptics,irq-gpio", 0, &bdata->irq_flags);
-	
+
 	retval = of_property_read_u32(np, "synaptics,irq-on-state",
 			&value);
 	if (retval < 0)
 		bdata->irq_on_state = 0;
 	else
 		bdata->irq_on_state = value;
-	
+
 	/*retval = of_property_read_string(np, "synaptics,pwr-reg-name", &name);
 	if (retval == -EINVAL)
 		bdata->pwr_reg_name = NULL;
@@ -179,9 +179,9 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 	} else {
 		bdata->power_delay_ms = 0;
 	}*/
-	
 
-	
+
+
 	/*if (of_property_read_bool(np, "synaptics,reset-gpio")) {
 		bdata->reset_gpio = of_get_named_gpio_flags(np,
 				"synaptics,reset-gpio", 0, NULL);
@@ -213,21 +213,23 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 	} else {
 		bdata->reset_delay_ms = 0;
 	}*/
-	
+
 	retval = of_property_read_u32(np, "synaptics,reset-delay-ms",
 			&value);
-	if (retval < 0)
+	if (retval < 0) {
 		return retval;
-	else
+	} else {
 		bdata->reset_delay_ms = value;
-	
-	
+	}
+
+
     retval = of_property_read_u32(np, "synaptics,power-delay-ms",
             &value);
-    if (retval < 0)
+    if (retval < 0) {
         return retval;
-    else
+	} else {
         bdata->power_delay_ms = value;
+    }
 
 	if (of_property_read_bool(np, "synaptics,max-y-for-2d")) {
 		retval = of_property_read_u32(np, "synaptics,max-y-for-2d",
@@ -299,7 +301,7 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 		bdata->vir_button_map->nbuttons = 0;
 		bdata->vir_button_map->map = NULL;
 	}
-	
+
 	bdata->fw_name = "PRXXX_fw.img";
 	retval = of_property_read_string(np, "synaptics,fw-name",
 					&bdata->fw_name);
@@ -307,7 +309,7 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 		dev_err(dev, "Unable to read fw name\n");
 		return retval;
 	}
-	
+
 	retval = synaptics_dsx_get_dt_coords(dev, "synaptics,display-coords",
 				bdata, NULL);
 	if (retval && (retval != -EINVAL))
@@ -425,7 +427,7 @@ static int synaptics_rmi4_i2c_read(struct synaptics_rmi4_data *rmi4_data,
     unsigned char buf_val[2] = {0};
 
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
-    
+
     if(cap_sel_status == 1 && fts_a5_flag == 1){
         printk("%s [fts] fts_a5_flag = %d\n", __func__, fts_a5_flag);
         buf_val[0] = 0xa5;
@@ -546,7 +548,7 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
         fts_a5_flag = 0;
         msleep(5);
     }
-    
+
 	retval = synaptics_rmi4_i2c_set_page(rmi4_data, addr);
 	if (retval != PAGE_SELECT_LEN) {
 		retval = -EIO;
@@ -613,7 +615,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 		const struct i2c_device_id *dev_id)
 {
 	int retval;
-	
+
 	printk("%s: start\n", __func__);
 	if (!i2c_check_functionality(client->adapter,
 			I2C_FUNC_SMBUS_BYTE_DATA)) {

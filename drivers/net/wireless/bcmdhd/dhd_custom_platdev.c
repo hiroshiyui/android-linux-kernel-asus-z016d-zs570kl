@@ -309,8 +309,9 @@ err_mem_alloc:
     if (wlan_static_dhd_prealloc_pktid_map)
         kfree(wlan_static_dhd_prealloc_pktid_map);
 
-    for (j = 0; j < i; j++)
+    for (j = 0; j < i; j++) {
         kfree(wlan_mem_array[j].mem_ptr);
+	}
 
 	i = WLAN_SKB_BUF_NUM;
 
@@ -1097,9 +1098,9 @@ void __exit dhd_wlan_exit(void)
 
     if (wlan_static_dhd_prealloc_pktid_map)
         kfree(wlan_static_dhd_prealloc_pktid_map);
-    
+
     for (i = 0; i < PREALLOC_WLAN_SEC_NUM; i++)
-        kfree(wlan_mem_array[i].mem_ptr);    
+        kfree(wlan_mem_array[i].mem_ptr);
 
 #endif /* CONFIG_BCMDHD_USE_STATIC_BUF */
 	return;

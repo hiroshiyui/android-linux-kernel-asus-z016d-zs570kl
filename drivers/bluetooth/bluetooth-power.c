@@ -211,10 +211,11 @@ static int bluetooth_power(int on)
 	} else {
 		bt_configure_gpios(on);
 gpio_fail:
-		if (bt_power_pdata->bt_gpio_sys_rst)
+		if (bt_power_pdata->bt_gpio_sys_rst) {
 			gpio_free(bt_power_pdata->bt_gpio_sys_rst);
 			bt_vreg_disable(bt_power_pdata->bt_vdd_io);
 		}
+	}
 out:
 	return rc;
 }

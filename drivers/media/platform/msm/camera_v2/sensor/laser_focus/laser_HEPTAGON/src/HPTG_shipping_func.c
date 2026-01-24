@@ -262,8 +262,9 @@ int Olivia_device_Load_Calibration_Value(struct msm_laser_focus_ctrl_t *dev_t){
 
 
     //notice that CSCmode changed at running time
-    if(CSCmode)
+    if(CSCmode) {
         gotKdata = false;
+	}
 
 	if(!gotKdata){
 		status = Larua_Read_Calibration_Data_From_File(data, SIZE_OF_OLIVIA_CALIBRATION_DATA+CONFIDENCE_LENGTH);

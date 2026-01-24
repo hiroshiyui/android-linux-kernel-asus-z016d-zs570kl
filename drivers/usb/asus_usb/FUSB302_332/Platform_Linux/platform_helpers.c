@@ -160,7 +160,7 @@ FSC_S32 fusb_InitializeGPIO(void)
 void fusb_GPIO_Set_VBus5v(FSC_BOOL set)
 {
     struct fusb30x_chip* chip = fusb30x_GetChip();
-/*	
+/*
     if (!chip)
     {
         pr_err("FUSB  %s - Error: Chip structure is NULL!\n", __func__);
@@ -171,7 +171,7 @@ void fusb_GPIO_Set_VBus5v(FSC_BOOL set)
     {
     	if (gpio_cansleep(chip->gpio_VBus5V))
     	{
-     	   /* 
+     	   /*
          		* If your system routes GPIO calls through a queue of some kind, then
          		* it may need to be able to sleep. If so, this call must be used.
          		*/
@@ -189,7 +189,7 @@ void fusb_GPIO_Set_VBus5v(FSC_BOOL set)
 void fusb_GPIO_Set_VBusOther(FSC_BOOL set)
 {
     struct fusb30x_chip* chip = fusb30x_GetChip();
-/*	
+/*
     if (!chip)
     {
         pr_err("FUSB  %s - Error: Chip structure is NULL!\n", __func__);
@@ -217,7 +217,7 @@ void fusb_GPIO_Set_VBusOther(FSC_BOOL set)
 FSC_BOOL fusb_GPIO_Get_VBus5v(void)
 {
     struct fusb30x_chip* chip = fusb30x_GetChip();
-/*	
+/*
     if (!chip)
     {
         pr_err("FUSB  %s - Error: Chip structure is NULL!\n", __func__);
@@ -235,13 +235,13 @@ FSC_BOOL fusb_GPIO_Get_VBus5v(void)
 FSC_BOOL fusb_GPIO_Get_VBusOther(void)
 {
     struct fusb30x_chip* chip = fusb30x_GetChip();
-/*	
+/*
     if (!chip)
     {
         pr_err("FUSB  %s - Error: Chip structure is NULL!\n", __func__);
         return false;
     }
-*/    
+*/
     return chip->gpio_VBusOther_value;
 }
 
@@ -323,7 +323,7 @@ void set_asus_mux(void)
         return;
     }
     USB_FUSB302_331_INFO("[PH][Before_MUX]GPIO %d state = %d , GPIO %d state = %d , Pin CC1 state = %d , Pin CC2 state = %d\n", USB_MUX_GPIO, gpio_get_value(USB_MUX_GPIO),USB_RE_GPIO,gpio_get_value(USB_RE_GPIO), blnCCPinIsCC1, blnCCPinIsCC2);
-    
+
     if (cc != chip->prev_orientation && gpio_is_valid(USB_MUX_GPIO))
     {
         chip->prev_orientation = cc; // Update previous orientation
@@ -352,7 +352,7 @@ void set_asus_mux(void)
                 //{
                 //    gpio_set_value(USB_RE_GPIO, USB_RE_HIGH);
                 //}
-				
+
                 if (gpio_cansleep(USB_MUX_GPIO))
                 {
                     gpio_set_value_cansleep(USB_MUX_GPIO, USB_MUX_LOW);
@@ -361,7 +361,7 @@ void set_asus_mux(void)
                 {
                     gpio_set_value(USB_MUX_GPIO, USB_MUX_LOW);
                 }
-                
+
                 USB_FUSB302_331_INFO("[PH[MUX]GPIO %d state = %d , GPIO %d state = %d , Pin CC1 state = %d , Pin CC2 state = %d\n", USB_MUX_GPIO, gpio_get_value(USB_MUX_GPIO),USB_RE_GPIO,gpio_get_value(USB_RE_GPIO), 1, 0);
                 break;
             case 2: // CC pin is CC2
@@ -373,7 +373,7 @@ void set_asus_mux(void)
                 //{
                 //    gpio_set_value(USB_RE_GPIO, USB_RE_HIGH);
                 //}
-				
+
                 if (gpio_cansleep(USB_MUX_GPIO))
                 {
                     gpio_set_value_cansleep(USB_MUX_GPIO, USB_MUX_HIGH);
@@ -382,7 +382,7 @@ void set_asus_mux(void)
                 {
                     gpio_set_value(USB_MUX_GPIO, USB_MUX_HIGH);
                 }
-                
+
                 USB_FUSB302_331_INFO("[PH][MUX]GPIO %d state = %d , GPIO %d state = %d , Pin CC1 state = %d , Pin CC2 state = %d\n", USB_MUX_GPIO, gpio_get_value(USB_MUX_GPIO),USB_RE_GPIO,gpio_get_value(USB_RE_GPIO), 0, 1);
                 break;
             default: // Unknown/unhandled value
@@ -409,7 +409,7 @@ void fusb_GPIO_Cleanup(void)
     }
 #endif // FSC_INTERRUPT_TRIGGERED
 
-    if (gpio_is_valid(chip->gpio_IntN) >= 0)
+    if (gpio_is_valid(chip->gpio_IntN))
     {
 #ifdef FSC_DEBUG
         gpio_unexport(chip->gpio_IntN);
@@ -418,7 +418,7 @@ void fusb_GPIO_Cleanup(void)
         gpio_free(chip->gpio_IntN);
     }
 
-    if (gpio_is_valid(chip->gpio_VBus5V) >= 0)
+    if (gpio_is_valid(chip->gpio_VBus5V))
     {
 #ifdef FSC_DEBUG
         gpio_unexport(chip->gpio_VBus5V);
@@ -427,13 +427,13 @@ void fusb_GPIO_Cleanup(void)
         gpio_free(chip->gpio_VBus5V);
     }
 
-    if (gpio_is_valid(chip->gpio_VBusOther) >= 0)
+    if (gpio_is_valid(chip->gpio_VBusOther))
     {
         gpio_free(chip->gpio_VBusOther);
     }
 
 #ifdef FSC_DEBUG
-    if (gpio_is_valid(chip->dbg_gpio_StateMachine) >= 0)
+    if (gpio_is_valid(chip->dbg_gpio_StateMachine))
     {
         gpio_unexport(chip->dbg_gpio_StateMachine);
         gpio_free(chip->dbg_gpio_StateMachine);
@@ -557,7 +557,7 @@ FSC_BOOL fusb_I2C_WriteData(FSC_U8 address, FSC_U8 length, FSC_U8* data)
             platform_delay_10us(I2C_RETRY_DELAY);
         }
     }
- 
+
     mutex_unlock(&chip->lock);
 
     return (ret >= 0);
@@ -3138,16 +3138,16 @@ static ssize_t _fusb_Sysfs_TypeC_Status_show(struct device* dev, struct device_a
     switch (core_get_cc_orientation())
     {
     case 0:
-      // There is no CC pin connected 
-      return sprintf(buf, "none\n"); 
+      // There is no CC pin connected
+      return sprintf(buf, "none\n");
     case 1:
-      // CC1 is the CC pin 
+      // CC1 is the CC pin
       return sprintf(buf, "cc1\n");
     case 2:
-      // CC2 is the CC pin  
+      // CC2 is the CC pin
       return sprintf(buf, "cc2\n");
     default:
-      return sprintf(buf, "error\n"); 
+      return sprintf(buf, "error\n");
     }
 }
 
@@ -3192,7 +3192,7 @@ void fusb_Sysfs_Init(void)
         USB_FUSB302_331_INFO("%s - Chip structure is null!\n", __func__);
         return;
     }
-    
+
     /* create attribute group for accessing the FUSB302 */
     ret = sysfs_create_group(&chip->client->dev.kobj, &fusb302_sysfs_attr_grp);
     if (ret)
@@ -3228,7 +3228,7 @@ FSC_BOOL fusb_IsDeviceValid(void)
         pr_err("FUSB  %s - Error: Chip structure is NULL!\n", __func__);
         return FALSE;
     }
-    
+
     // Test to see if we can do a successful I2C read
     if (!fusb_I2C_ReadData((FSC_U8)0x01, &val))
     {
@@ -3623,7 +3623,7 @@ void fusb_disabled_state_enter(void)
 	core_rd_rp_disable();
 	mdelay(50);
 }
- 
+
 void fusb_notify_state_chaged(ConnectionState previous_state, ConnectionState current_state)
 {
 	struct fusb30x_chip* chip = fusb30x_GetChip();

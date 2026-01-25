@@ -215,6 +215,7 @@ static void bcl_handle_hotplug(struct work_struct *work)
 	int ret = 0, cpu = 0;
 	union device_request curr_req;
 
+	pr_info("bcl start hotplug mitigation\n");
 	trace_bcl_sw_mitigation_event("start hotplug mitigation");
 	mutex_lock(&bcl_hotplug_mutex);
 
@@ -231,6 +232,7 @@ static void bcl_handle_hotplug(struct work_struct *work)
 		if (bcl_hotplug_request & BIT(cpu))
 			cpumask_set_cpu(cpu, &curr_req.offline_mask);
 	}
+	pr_info("bcl Start hotplug CPU:%d\n", bcl_hotplug_request);
 	trace_bcl_sw_mitigation("Start hotplug CPU", bcl_hotplug_request);
 	ret = devmgr_client_request_mitigation(
 		gbcl->hotplug_handle,
@@ -243,6 +245,7 @@ static void bcl_handle_hotplug(struct work_struct *work)
 
 handle_hotplug_exit:
 	mutex_unlock(&bcl_hotplug_mutex);
+	pr_info("bcl stop hotplug mitigation\n");
 	trace_bcl_sw_mitigation_event("stop hotplug mitigation");
 	return;
 }

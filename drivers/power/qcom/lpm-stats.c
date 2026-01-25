@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, 2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -682,14 +682,11 @@ static void cleanup_stats(struct lpm_stats *stats)
 {
 	struct list_head *centry = NULL;
 	struct lpm_stats *pos = NULL;
-	struct lpm_stats *n = NULL;
 
 	centry = &stats->child;
-	list_for_each_entry_safe_reverse(pos, n, centry, sibling) {
-		if (!list_empty(&pos->child)) {
+	list_for_each_entry_reverse(pos, centry, sibling) {
+		if (!list_empty(&pos->child))
 			cleanup_stats(pos);
-			continue;
-		}
 
 		list_del_init(&pos->child);
 
@@ -866,9 +863,13 @@ void lpm_stats_suspend_exit(void)
 {
 	struct timespec ts;
 	uint64_t exit_time = 0;
+	uint32_t ns;
 
 	getnstimeofday(&ts);
 	exit_time = timespec_to_ns(&ts) - suspend_time_stats.enter_time;
+	ns = do_div(exit_time, NSEC_PER_SEC);
+	pr_info("Suspended for %lld.%09u secs.\n", exit_time, ns);
 	update_level_stats(&suspend_time_stats, exit_time, true);
+	ASUSEvtlog("[PM] Suspended for %lld.%09u secs.\n", exit_time, ns);
 }
 EXPORT_SYMBOL(lpm_stats_suspend_exit);

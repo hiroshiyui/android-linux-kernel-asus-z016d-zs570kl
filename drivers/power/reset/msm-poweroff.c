@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -60,7 +60,7 @@ static void scm_disable_sdi(void);
 * There is no API from TZ to re-enable the registers.
 * So the SDI cannot be re-enabled when it already by-passed.
 */
-static int download_mode = 1;
+static int download_mode = 0;
 #else
 static const int download_mode;
 #endif
@@ -152,6 +152,7 @@ static bool get_dload_mode(void)
 	return dload_mode_enabled;
 }
 
+#if 0
 static void enable_emergency_dload_mode(void)
 {
 	int ret;
@@ -176,6 +177,7 @@ static void enable_emergency_dload_mode(void)
 	if (ret)
 		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
 }
+#endif
 
 static int dload_set(const char *val, struct kernel_param *kp)
 {
@@ -281,12 +283,12 @@ static void msm_restart_prepare(const char *cmd)
 
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode */
-		if (get_dload_mode() ||
+		if (in_panic || get_dload_mode() ||
 			((cmd != NULL && cmd[0] != '\0') &&
-			!strcmp(cmd, "edl")))
+			(!strcmp(cmd, "edl") || (!strcmp(cmd, "powerkey")))))
 			need_warm_reset = true;
 	} else {
-		need_warm_reset = (get_dload_mode() ||
+		need_warm_reset = (in_panic || get_dload_mode() ||
 				((cmd != NULL && cmd[0] != '\0') &&
 				strcmp(cmd, "userrequested")));
 	}
@@ -330,11 +332,21 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
+#if 0
 		} else if (!strncmp(cmd, "edl", 3)) {
 			enable_emergency_dload_mode();
+#endif
 		} else {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_KERNEL);
 			__raw_writel(0x77665501, restart_reason);
 		}
+	}
+
+	if (in_panic) {
+		qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_PANIC);
+		__raw_writel(0x77665507, restart_reason);
 	}
 
 	flush_cache_all();

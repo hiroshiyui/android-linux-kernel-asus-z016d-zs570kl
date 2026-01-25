@@ -18,6 +18,7 @@
 #include <linux/mmc/mmc.h>
 #include <linux/pm_qos.h>
 #include "sdhci-pltfm.h"
+#include <linux/switch.h>
 
 /* This structure keeps information per regulator */
 struct sdhci_msm_reg_data {
@@ -153,6 +154,7 @@ struct sdhci_msm_pltfm_data {
 	u32 ice_clk_min;
 	struct sdhci_msm_pm_qos_data pm_qos_data;
 	bool sdr104_wa;
+	struct mmc_host  *mmc;
 };
 
 struct sdhci_msm_bus_vote {
@@ -185,6 +187,7 @@ struct sdhci_msm_host {
 	struct sdhci_msm_pltfm_data *pdata;
 	struct mmc_host  *mmc;
 	struct sdhci_pltfm_data sdhci_msm_pdata;
+	struct switch_dev sd_status;
 	u32 curr_pwr_state;
 	u32 curr_io_level;
 	struct completion pwr_irq_completion;

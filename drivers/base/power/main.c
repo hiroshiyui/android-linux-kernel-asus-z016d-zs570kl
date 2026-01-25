@@ -37,6 +37,8 @@
 #include "../base.h"
 #include "power.h"
 
+unsigned int pm_pwrcs_ret = 0;
+
 typedef int (*pm_callback_t)(struct device *);
 
 /*
@@ -365,6 +367,8 @@ static void pm_dev_err(struct device *dev, pm_message_t state, char *info,
 			int error)
 {
 	printk(KERN_ERR "PM: Device %s failed to %s%s: error %d\n",
+		dev_name(dev), pm_verb(state.event), info, error);
+	ASUSEvtlog("PM: Device %s failed to %s%s: error %d\n",
 		dev_name(dev), pm_verb(state.event), info, error);
 }
 
@@ -1530,6 +1534,7 @@ int dpm_suspend(pm_message_t state)
 		if (async_error)
 			break;
 	}
+	pm_pwrcs_ret = 1;
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	if (!error)

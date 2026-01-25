@@ -160,3 +160,5 @@ config USB_LED_TRIG
 	  gadget.
 
 endif # USB_SUPPORT
+
+source "drivers/usb/asus_usb/Kconfig"

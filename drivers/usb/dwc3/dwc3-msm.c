@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -59,6 +59,8 @@
 #define MICRO_5V    5000000
 #define MICRO_9V    9000000
 
+/* usb traffic monitor record variable */
+int record_previous_traffic_state = 1;
 /* AHB2PHY register offsets */
 #define PERIPH_SS_AHB2PHY_TOP_CFG 0x10
 
@@ -238,7 +240,6 @@ struct dwc3_msm {
 	u32			bus_perf_client;
 	struct msm_bus_scale_pdata	*bus_scale_table;
 	struct power_supply	usb_psy;
-	enum power_supply_type	usb_supply_type;
 	unsigned int		online;
 	bool			in_host_mode;
 	unsigned int		voltage_max;
@@ -275,6 +276,7 @@ struct dwc3_msm {
 	struct pm_qos_request   pm_qos_req_dma;
 	struct delayed_work     perf_vote_work;
 	enum dwc3_perf_mode	curr_mode;
+	struct delayed_work	traffic_monitor_w;
 };
 
 #define USB_HSPHY_3P3_VOL_MIN		3050000 /* uV */
@@ -296,6 +298,10 @@ struct dwc3_msm {
 
 static void dwc3_pwr_event_handler(struct dwc3_msm *mdwc);
 static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned mA);
+
+/* ASUS_BSP : USB Traffic Monitor Refresh Timer +++ */
+void gpio_update_function(struct dwc3_msm *mdwc);
+/* ASUS_BSP : USB Traffic Monitor Refresh Timer --- */
 
 /**
  *
@@ -1566,6 +1572,56 @@ int msm_ep_unconfig(struct usb_ep *ep)
 EXPORT_SYMBOL(msm_ep_unconfig);
 static void dwc3_resume_work(struct work_struct *w);
 
+static void dwc3_traffic_monitor_work(struct work_struct *w)
+{
+	struct dwc3_msm *mdwc = container_of(w, struct dwc3_msm,
+						traffic_monitor_w.work);
+	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+        char *devpath_monitor;
+	unsigned cur_sample_count;
+        //int record_previous_traffic_state = 0;
+        //char *traffic_on[2] = { "USB_TRAFFIC=HIGH", NULL };
+        char *traffic_idle[2] = { "USB_TRAFFIC=IDLE", NULL };
+	//unsigned long flags;
+        int usb3_gpio=999;
+
+        usb3_gpio = gpio_get_value(16); // GPIO 16 = USB 3.0 GPIO
+
+	cur_sample_count = dwc->traffic_mon_count;
+	dwc->traffic_mon_count = 0;
+
+        record_previous_traffic_state = dwc->usb_traffic_state;
+        //spin_lock_irqsave(&dwc->lock, flags);
+        /* Add your threshold checks here and handling conditions */
+        if(usb3_gpio){
+                if (cur_sample_count > 1000) {
+                        /* If 1000 transfers completers occurred, how to handle it? */
+                        printk(KERN_EMERG "[USB] %s: current sample = %d\n",__func__, cur_sample_count);
+                        dwc->usb_traffic_state = 1;
+                } else if (cur_sample_count >= 0 && cur_sample_count <= 1000) {
+                        printk(KERN_EMERG "[USB] %s: current sample = %d\n",__func__, cur_sample_count);
+                        dwc->usb_traffic_state = 0;
+	        }
+        }else if(usb3_gpio==0){
+                dwc->usb_traffic_state = 1;
+        }
+        printk(KERN_EMERG "[USB] %s: current sample = %d, usb3_gpio = %d, previous_traffic = %d,traffic(now) = %d\n",__func__, cur_sample_count, usb3_gpio,record_previous_traffic_state,dwc->usb_traffic_state);
+
+        //spin_unlock_irqrestore(&dwc->lock, flags);
+
+        if(usb3_gpio)
+        {
+                if(((record_previous_traffic_state==0)&&(dwc->usb_traffic_state==0)))
+                        kobject_uevent_env(&dwc->dev->kobj, KOBJ_CHANGE, traffic_idle);
+        }
+
+        devpath_monitor = kobject_get_path(&dwc->dev->kobj, GFP_KERNEL);
+        printk(KERN_EMERG "[USB] %s: kobj path = %s\n",__func__,devpath_monitor);
+        if(mdwc->vbus_active)
+                queue_delayed_work(mdwc->dwc3_resume_wq, &mdwc->traffic_monitor_w,
+                       msecs_to_jiffies(60000));
+}
+
 static void dwc3_restart_usb_work(struct work_struct *w)
 {
 	struct dwc3_msm *mdwc = container_of(w, struct dwc3_msm,
@@ -2324,25 +2380,31 @@ static void dwc3_ext_event_notify(struct dwc3_msm *mdwc)
 		flush_delayed_work(&mdwc->sm_work);
 
 	if (mdwc->id_state == DWC3_ID_FLOAT) {
+		dev_info(mdwc->dev, "[USB] ID set\n");
 		dbg_event(0xFF, "ID set", 0);
 		set_bit(ID, &mdwc->inputs);
 	} else {
+		dev_info(mdwc->dev, "[USB] ID clear\n");
 		dbg_event(0xFF, "ID clear", 0);
 		clear_bit(ID, &mdwc->inputs);
 	}
 
 	if (mdwc->vbus_active && !mdwc->in_restart) {
+		dev_info(mdwc->dev, "[USB] BSV set\n");
 		dbg_event(0xFF, "BSV set", 0);
 		set_bit(B_SESS_VLD, &mdwc->inputs);
 	} else {
+		dev_info(mdwc->dev, "[USB] BSV clear\n");
 		dbg_event(0xFF, "BSV clear", 0);
 		clear_bit(B_SESS_VLD, &mdwc->inputs);
 	}
 
 	if (mdwc->suspend) {
+		dev_info(mdwc->dev, "[USB] SUSP set\n");
 		dbg_event(0xFF, "SUSP set", 0);
 		set_bit(B_SUSPEND, &mdwc->inputs);
 	} else {
+		dev_info(mdwc->dev, "[USB] SUSP clear\n");
 		dbg_event(0xFF, "SUSP clear", 0);
 		clear_bit(B_SUSPEND, &mdwc->inputs);
 	}
@@ -2366,7 +2428,7 @@ static void dwc3_resume_work(struct work_struct *w)
 							resume_work.work);
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 
-	dev_dbg(mdwc->dev, "%s: dwc3 resume work\n", __func__);
+	dev_info(mdwc->dev, "[USB] %s: dwc3 resume work\n", __func__);
 
 	/*
 	 * exit LPM first to meet resume timeline from device side.
@@ -2512,9 +2574,6 @@ static int dwc3_msm_power_get_property_usb(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = mdwc->online;
 		break;
-	case POWER_SUPPLY_PROP_REAL_TYPE:
-		val->intval = mdwc->usb_supply_type;
-		break;
 	case POWER_SUPPLY_PROP_TYPE:
 		val->intval = psy->type;
 		break;
@@ -2554,6 +2613,7 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 
 		/* Let OTG know about ID detection */
 		mdwc->id_state = id;
+		dev_info(mdwc->dev, "[USB] id_state = %d\n",mdwc->id_state);
 		dbg_event(0xFF, "id_state", mdwc->id_state);
 		if (dwc->is_drd) {
 			dbg_event(0xFF, "stayID", 0);
@@ -2623,22 +2683,10 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 						mdwc->bc1p2_current_max);
 		}
 		break;
-	case POWER_SUPPLY_PROP_REAL_TYPE:
-		mdwc->usb_supply_type = val->intval;
-		/*
-		 * Update TYPE property to DCP for HVDCP/HVDCP3 charger types
-		 * so that they can be recongized as AC chargers by healthd.
-		 * Don't report UNKNOWN charger type to prevent healthd missing
-		 * detecting this power_supply status change.
-		 */
-		if (mdwc->usb_supply_type == POWER_SUPPLY_TYPE_USB_HVDCP_3
-			|| mdwc->usb_supply_type == POWER_SUPPLY_TYPE_USB_HVDCP)
-			psy->type = POWER_SUPPLY_TYPE_USB_DCP;
-		else if (mdwc->usb_supply_type == POWER_SUPPLY_TYPE_UNKNOWN)
-			psy->type = POWER_SUPPLY_TYPE_USB;
-		else
-			psy->type = mdwc->usb_supply_type;
-		switch (mdwc->usb_supply_type) {
+	case POWER_SUPPLY_PROP_TYPE:
+		psy->type = val->intval;
+
+		switch (psy->type) {
 		case POWER_SUPPLY_TYPE_USB:
 			mdwc->chg_type = DWC3_SDP_CHARGER;
 			mdwc->voltage_max = MICRO_5V;
@@ -2673,6 +2721,11 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_HEALTH:
 		mdwc->health_status = val->intval;
 		break;
+        /* ASUS_BSP : USB Traffic Monitor Refresh Timer +++ */
+        case POWER_SUPPLY_PROP_REFRESH_TIMER:
+                gpio_update_function(mdwc);
+                break;
+        /* ASUS_BSP : USB Traffic Monitor Refresh Timer --- */
 	default:
 		return -EINVAL;
 	}
@@ -2690,7 +2743,7 @@ dwc3_msm_property_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_PRESENT:
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_MAX:
-	case POWER_SUPPLY_PROP_REAL_TYPE:
+	case POWER_SUPPLY_PROP_TYPE:
 		return 1;
 	default:
 		break;
@@ -2714,7 +2767,6 @@ static enum power_supply_property dwc3_msm_pm_power_props_usb[] = {
 	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_USB_OTG,
-	POWER_SUPPLY_PROP_REAL_TYPE,
 };
 
 static irqreturn_t dwc3_pmic_id_irq(int irq, void *data)
@@ -2951,6 +3003,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 
 	INIT_LIST_HEAD(&mdwc->req_complete_list);
 	INIT_DELAYED_WORK(&mdwc->resume_work, dwc3_resume_work);
+	INIT_DELAYED_WORK(&mdwc->traffic_monitor_w, dwc3_traffic_monitor_work);
 	INIT_WORK(&mdwc->restart_usb_work, dwc3_restart_usb_work);
 	INIT_DELAYED_WORK(&mdwc->sm_work, dwc3_msm_otg_sm_work);
 	INIT_DELAYED_WORK(&mdwc->perf_vote_work, dwc3_msm_otg_perf_vote_work);
@@ -3566,7 +3619,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 	}
 
 	if (on) {
-		dev_dbg(mdwc->dev, "%s: turn on host\n", __func__);
+		dev_info(mdwc->dev, "[USB] %s: turn on host\n", __func__);
 
 		pm_runtime_get_sync(mdwc->dev);
 		dbg_event(0xFF, "StrtHost gync",
@@ -3652,7 +3705,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		schedule_delayed_work(&mdwc->perf_vote_work,
 			msecs_to_jiffies(1000 * PM_QOS_SAMPLE_SEC));
 	} else {
-		dev_dbg(mdwc->dev, "%s: turn off host\n", __func__);
+		dev_info(mdwc->dev, "[USB] %s: turn off host\n", __func__);
 
 		usb_unregister_atomic_notify(&mdwc->usbdev_nb);
 		if (!IS_ERR(mdwc->vbus_reg))
@@ -3747,11 +3800,12 @@ static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 
 		dwc3_set_mode(dwc, DWC3_GCTL_PRTCAP_DEVICE);
 		usb_gadget_vbus_connect(&dwc->gadget);
-
 		dwc3_msm_perf_vote_update(mdwc, DWC3_PERF_NOM);
+                queue_delayed_work(mdwc->dwc3_resume_wq, &mdwc->traffic_monitor_w,msecs_to_jiffies(60000));
 	} else {
 		dev_dbg(mdwc->dev, "%s: turn off gadget %s\n",
 					__func__, dwc->gadget.name);
+                cancel_delayed_work_sync(&mdwc->traffic_monitor_w);
 		usb_gadget_vbus_disconnect(&dwc->gadget);
 		usb_phy_notify_disconnect(mdwc->hs_phy, USB_SPEED_HIGH);
 		usb_phy_notify_disconnect(mdwc->ss_phy, USB_SPEED_SUPER);
@@ -3768,10 +3822,22 @@ static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 	return 0;
 }
 
+void gpio_update_function(struct dwc3_msm *mdwc)
+{
+        /* return original state */
+        record_previous_traffic_state = 1;
+        printk(KERN_EMERG "[USB] %s: Refresh USB Traffic Monitor Status/Timer, record status = %d\n",__func__, record_previous_traffic_state);
+        /* refresh usb traffic monitor timer */
+        if(!mod_delayed_work_on(0, mdwc->dwc3_resume_wq, &mdwc->traffic_monitor_w, msecs_to_jiffies(60000))){
+                cancel_delayed_work_sync(&mdwc->traffic_monitor_w);
+                queue_delayed_work(mdwc->dwc3_resume_wq, &mdwc->traffic_monitor_w,msecs_to_jiffies(60000));
+        }
+}
+EXPORT_SYMBOL(gpio_update_function);
+
 static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned mA)
 {
 	enum power_supply_type power_supply_type;
-	union power_supply_propval propval;
 
 	if (mdwc->charging_disabled)
 		return 0;
@@ -3796,9 +3862,7 @@ static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned mA)
 	else
 		power_supply_type = POWER_SUPPLY_TYPE_UNKNOWN;
 
-	propval.intval = power_supply_type;
-	mdwc->usb_psy.set_property(&mdwc->usb_psy,
-			POWER_SUPPLY_PROP_REAL_TYPE, &propval);
+	power_supply_set_supply_type(&mdwc->usb_psy, power_supply_type);
 
 skip_psy_type:
 
@@ -3934,7 +3998,7 @@ static void dwc3_msm_otg_sm_work(struct work_struct *w)
 	}
 
 	state = usb_otg_state_string(mdwc->otg_state);
-	dev_dbg(mdwc->dev, "%s state\n", state);
+	dev_info(mdwc->dev, "[USB] %s: %s state\n", __func__, state);
 	dbg_event(0xFF, state, 0);
 
 	/* Check OTG state */
@@ -3971,7 +4035,7 @@ static void dwc3_msm_otg_sm_work(struct work_struct *w)
 		}
 
 		if (test_bit(B_SESS_VLD, &mdwc->inputs)) {
-			dev_dbg(mdwc->dev, "b_sess_vld\n");
+			dev_info(mdwc->dev, "b_sess_vld\n");
 			dbg_event(0xFF, "undef_b_sess_vld", 0);
 			switch (mdwc->chg_type) {
 			case DWC3_DCP_CHARGER:
@@ -4143,6 +4207,7 @@ static void dwc3_msm_otg_sm_work(struct work_struct *w)
 			mdwc->vbus_retry_count = 0;
 			work = 1;
 		} else {
+			dev_info(mdwc->dev, "!id\n");
 			mdwc->otg_state = OTG_STATE_A_HOST;
 			ret = dwc3_otg_start_host(mdwc, 1);
 			if ((ret == -EPROBE_DEFER) &&

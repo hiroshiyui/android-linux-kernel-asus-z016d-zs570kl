@@ -734,7 +734,7 @@ static void bcl_poll_vbat_high(struct work_struct *work)
 	if (ret)
 		pr_err("Error clearing min vbat reg. err:%d\n", ret);
 	if (val >= perph_data->high_trip) {
-		pr_debug("Vbat reached high clear trip. vbat:%d\n", val);
+		pr_info("Vbat reached high clear trip. vbat:%d\n", val);
 		trace_bcl_hw_state_event("Polling to Monitor. vbat[uV]:", val);
 		trace_bcl_hw_mitigation("vbat high trip. vbat[uV]", val);
 		perph_data->ops.notify(perph_data->param_data, val,
@@ -832,7 +832,7 @@ static irqreturn_t bcl_handle_vbat(int irq, void *data)
 			trace_bcl_hw_event("Vbat Invalid interrupt");
 			goto exit_intr;
 		}
-		pr_debug("Vbat reached Low trip. vbat:%d\n",
+		pr_info("Vbat reached Low trip. vbat:%d\n",
 			perph_data->trip_val);
 		trace_bcl_hw_state_event("Monitor to Polling. vbat[uV]:",
 				perph_data->trip_val);

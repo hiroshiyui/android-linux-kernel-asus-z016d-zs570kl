@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,7 +21,7 @@
 	interrupt-parent = <&intc>;
 
 	chosen {
-		bootargs = "sched_enable_hmp=1 sched_enable_power_aware=1 app_setting.use_32bit_app_setting=1 kpti=1";
+		bootargs = "sched_enable_hmp=1 sched_enable_power_aware=1 app_setting.use_32bit_app_setting=1";
 	};
 
 	aliases {
@@ -163,14 +163,6 @@
 			compatible = "android,firmware";
 			fstab {
 				compatible = "android,fstab";
-				vendor {
-					compatible = "android,vendor";
-					dev = "/dev/block/platform/soc/7464900.sdhci/by-name/vendor";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,discard";
-					fsmgr_flags = "wait";
-					status = "ok";
-				 };
 				 system {
 					compatible = "android,system";
 					dev = "/dev/block/platform/soc/7464900.sdhci/by-name/system";
@@ -209,12 +201,20 @@
 			size = <0 0x400000>;
 		};
 
+                pstore_reserve_mem: pstore_reserve_mem_region@0 {
+                        linux,reserve-contiguous-region;
+                        linux,reserve-region;
+                        linux,remove-completely;
+                        reg = <0x0 0x9ff00000 0x0 0x00100000>;
+                        label = "pstore_reserve_mem";
+                };
+
 		qseecom_mem: qseecom_region {
 			compatible = "shared-dma-pool";
 			alloc-ranges = <0 0x00000000 0 0xffffffff>;
 			reusable;
 			alignment = <0 0x400000>;
-			size = <0 0x1400000>;
+			size = <0 0x1800000>;
 		};
 
 		secure_display_memory: secure_region {
@@ -365,6 +365,8 @@
 			<&dma_blsp2 23 32 0x20000020 0x20>;
 		dma-names = "tx", "rx";
 		qcom,master-id = <84>;
+		qcom,noise-rjct-scl = <3>;
+		qcom,noise-rjct-sda = <3>;
 		qcom,clk-freq-out = <400000>;
 		qcom,clk-freq-in  = <19200000>;
 		clock-names = "iface_clk", "core_clk";
@@ -448,8 +450,10 @@
 			<&dma_blsp2 15 32 0x20000020 0x20>;
 		dma-names = "tx", "rx";
 		qcom,master-id = <84>;
-		qcom,clk-freq-out = <400000>;
+		qcom,clk-freq-out = <100000>;
 		qcom,clk-freq-in  = <19200000>;
+		qcom,high-time-clk-div = <93>;
+		qcom,fs-clk-div = <93>;
 		clock-names = "iface_clk", "core_clk";
 		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
 			<&clock_gcc clk_gcc_blsp2_qup2_i2c_apps_clk>;
@@ -459,20 +463,19 @@
 	};
 
 	blsp1_uart2: uart@07570000 { /* BLSP1 UART2 */
-		compatible = "qcom,msm-hsuart-v14";
+		compatible = "qcom,msm-hsuart-v14-brcmbt";
 		reg = <0x07570000 0x1000>,
 		    <0x7544000 0x2b000>;
 		status = "disabled";
 		reg-names = "core_mem", "bam_mem";
-		interrupt-names = "core_irq", "bam_irq", "wakeup_irq";
+		interrupt-names = "core_irq", "bam_irq";
 		#address-cells = <0>;
-		interrupt-parent = <&blsp1_uart2>;
-		interrupts = <0 1 2>;
+		interrupt-parent = <&blsp1_uart2>;  /* BLSP2 at GPIO table */
+		interrupts = <0 1>;
 		#interrupt-cells = <1>;
 		interrupt-map-mask = <0xffffffff>;
 		interrupt-map = <0 &intc 0 0 108 0
-			    1 &intc 0 0 238 0
-			    2 &tlmm 42 0>;
+			    1 &intc 0 0 238 0>;
 
 		qcom,inject-rx-on-wakeup;
 		qcom,rx-char-to-inject = <0xFD>;
@@ -1006,6 +1009,8 @@
 			qcom,cdc-mad-dmic-rate = <600000>;
 			qcom,cdc-ecpp-dmic-rate = <1200000>;
 			qcom,cdc-dmic-clk-drv-strength = <2>;
+
+			asus,uart-sw-control = <&tlmm 92 0>;
 		};
 	};
 
@@ -1351,7 +1356,7 @@
 			&pcie0_wake_sleep>;
 
 		perst-gpio = <&tlmm 35 0>;
-		wake-gpio = <&tlmm 37 0>;
+//		wake-gpio = <&tlmm 37 0>;
 
 		gdsc-smmu-supply = <&gdsc_aggre0_noc>;
 		gdsc-vdd-supply = <&gdsc_pcie_0>;
@@ -1972,7 +1977,7 @@
 		interrupt-names = "hs_phy_irq", "ss_phy_irq", "pwr_event_irq";
 
 		USB3_GDSC-supply = <&gdsc_usb30>;
-		vbus_dwc3-supply = <&smbcharger_charger_otg>;
+		vbus_dwc3-supply = <&smbcharger_external_otg>;
 		qcom,usb-dbm = <&dbm_1p5>;
 		qcom,msm-bus,name = "usb3";
 		qcom,msm-bus,num-cases = <3>;
@@ -2149,9 +2154,10 @@
 		qcom,tune2-efuse-num-bits = <4>;
 		qcom,enable-dpdm-pulsing;
 		qcom,qusb-phy-init-seq = <0xF8 0x80
-					0xB3 0x84
+					0x23 0x84
 					0x83 0x88
-					0xC0 0x8C
+					0xC7 0x8C
+                                        0x03 0x90
 					0x30 0x08
 					0x79 0x0C
 					0x21 0x10
@@ -2313,21 +2319,24 @@
 		memory-region = <&peripheral_mem>;
 	};
 
+    bcmdhd {
+        compatible = "android,bcmdhd_wlan";
+        wl_reg_on = <&pm8994_gpios 8 0>;      /* wifi reg_on pin */
+        wl_host_wake = <&tlmm 37 0>;    /* wifi oob pin */
+    };
+
 	qcom,cnss {
 		compatible = "qcom,cnss";
 		wlan-bootstrap-gpio = <&tlmm 46 0>;
-		vdd-wlan-en-supply = <&wlan_en_vreg>;
+		wlan-en-gpio = <&pm8994_gpios 8 0>;
 		vdd-wlan-supply = <&rome_vreg>;
 		vdd-wlan-io-supply = <&pm8994_s4>;
 		vdd-wlan-xtal-supply = <&pm8994_l30>;
 		vdd-wlan-core-supply = <&pm8994_s3>;
 		wlan-ant-switch-supply = <&pm8994_l18_pin_ctrl>;
-		qcom,wlan-en-vreg-support;
-		qcom,enable-bootstrap-gpio;
 		qcom,notify-modem-status;
-		pinctrl-names = "bootstrap_active", "bootstrap_sleep";
-		pinctrl-0 = <&cnss_bootstrap_active>;
-		pinctrl-1 = <&cnss_bootstrap_sleep>;
+		pinctrl-names = "default";
+//		pinctrl-0 = <&cnss_default>;
 		qcom,wlan-rc-num = <0>;
 		qcom,wlan-ramdump-dynamic = <0x200000>;
 
@@ -2366,8 +2375,10 @@
 
 		vdd_cx-supply = <&pm8994_l26_corner>;
 		vdd_px-supply = <&pm8994_lvs2>;
+		vdd_als-supply = <&pm8994_l19>;
 		qcom,vdd_cx-uV-uA = <5 0>;
-		qcom,proxy-reg-names = "vdd_cx", "vdd_px";
+		qcom,vdd_als-uV-uA = <3050000 100000>;
+		qcom,proxy-reg-names = "vdd_cx", "vdd_px", "vdd_als";
 		qcom,keep-proxy-regs-on;
 
 		clocks = <&clock_gcc clk_cxo_pil_ssc_clk>,
@@ -2571,6 +2582,14 @@
 			 <&clock_gcc clk_gcc_ce1_ahb_m_clk>,
 			 <&clock_gcc clk_gcc_ce1_axi_m_clk>;
 		qcom,ce-opp-freq = <171430000>;
+	};
+
+	tzapp_mem: tzapp_region@0 {
+		linux,reserve-contiguous-region;
+		linux,reserve-region;
+		linux,remove-completely;
+		reg = <0 0x86600000 0 0x2200000>;
+		label = "tzapp_mem";
 	};
 
 	qcom_seecom: qseecom@86600000 {
@@ -2810,24 +2829,28 @@
 		qcom,temperature-sensor = <&sensor_information4>;
 		qcom,boot-frequency-mitigate;
 		qcom,hotplug-mitigation-enable;
+		qcom,emergency-frequency-mitigate;
 	};
 
 	mitigation_profile1: qcom,limit_info-1 {
 		qcom,temperature-sensor = <&sensor_information6>;
 		qcom,boot-frequency-mitigate;
 		qcom,hotplug-mitigation-enable;
+		qcom,emergency-frequency-mitigate;
 	};
 
 	mitigation_profile2: qcom,limit_info-2 {
 		qcom,temperature-sensor = <&sensor_information9>;
 		qcom,boot-frequency-mitigate;
 		qcom,hotplug-mitigation-enable;
+		qcom,emergency-frequency-mitigate;
 	};
 
 	mitigation_profile3: qcom,limit_info-3 {
 		qcom,temperature-sensor = <&sensor_information11>;
 		qcom,boot-frequency-mitigate;
 		qcom,hotplug-mitigation-enable;
+		qcom,emergency-frequency-mitigate;
 	};
 
 	qcom,msm-thermal {
@@ -2843,8 +2866,8 @@
 		qcom,core-temp-hysteresis = <10>;
 		qcom,hotplug-temp = <105>;
 		qcom,hotplug-temp-hysteresis = <40>;
-		qcom,freq-mitigation-temp = <90>;
-		qcom,freq-mitigation-temp-hysteresis = <40>;
+		qcom,freq-mitigation-temp = <115>;
+		qcom,freq-mitigation-temp-hysteresis = <0>;
 		qcom,freq-mitigation-value = <576000>;
 		qcom,online-hotplug-core;
 		qcom,synchronous-cluster-id = <0 1>;
@@ -2887,9 +2910,9 @@
 			qcom,low-threshold-uamp = <3400000>;
 			qcom,high-threshold-uamp = <4200000>;
 			qcom,mitigation-freq-khz = <576000>;
-			qcom,vph-high-threshold-uv = <3500000>;
-			qcom,vph-low-threshold-uv = <3300000>;
-			qcom,soc-low-threshold = <10>;
+			qcom,vph-high-threshold-uv = <3200000>;
+			qcom,vph-low-threshold-uv = <3000000>;
+			qcom,soc-low-threshold = <1>; /* do not disable/limit cpu too early */
 			qcom,thermal-handle = <&msm_thermal_freq>;
 		};
 	};
@@ -3600,6 +3623,7 @@
 
 	qcom,msm-ssc-sensors {
 		compatible = "qcom,msm-ssc-sensors";
+		vdd-supply = <&pm8994_l19>;
 		status = "ok";
 	};
 

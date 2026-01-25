@@ -1261,6 +1261,7 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
 	}
 }
 
+extern int g_recovery_mode;
 static void ufs_qcom_set_caps(struct ufs_hba *hba)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
@@ -1268,7 +1269,8 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	if (!host->disable_lpm) {
 		hba->caps |= UFSHCD_CAP_CLK_GATING;
 		hba->caps |= UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
-		hba->caps |= UFSHCD_CAP_CLK_SCALING;
+		if (!g_recovery_mode)
+			hba->caps |= UFSHCD_CAP_CLK_SCALING;
 	}
 	hba->caps |= UFSHCD_CAP_AUTO_BKOPS_SUSPEND;
 

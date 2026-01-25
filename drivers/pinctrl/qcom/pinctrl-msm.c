@@ -30,6 +30,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/reboot.h>
 #include <linux/irqchip/msm-mpm-irq.h>
+#include <linux/irqchip/arm-gic-v3.h>
 #include "../core.h"
 #include "../pinconf.h"
 #include "pinctrl-msm.h"
@@ -38,6 +39,9 @@
 #define MAX_NR_GPIO 300
 #define PS_HOLD_OFFSET 0x820
 #define TLMM_EBI2_EMMC_GPIO_CFG 0x111000
+
+int gpio_irq_cnt;
+struct gic_resume_irq_data gpio_resume_irq[8];
 
 /**
  * struct msm_pinctrl - state for a pinctrl-msm device
@@ -537,8 +541,10 @@ static void msm_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 	unsigned i;
 
 	for (i = 0; i < chip->ngpio; i++, gpio++) {
-		msm_gpio_dbg_show_one(s, NULL, chip, i, gpio);
-		seq_puts(s, "\n");
+		if (i < 81 || i > 84) {
+			msm_gpio_dbg_show_one(s, NULL, chip, i, gpio);
+			seq_puts(s, "\n");
+		}
 	}
 }
 
@@ -941,7 +947,7 @@ static int msm_pinctrl_suspend(void)
 
 static void msm_pinctrl_resume(void)
 {
-	int i, irq;
+	int i, irq, j;
 	u32 val;
 	unsigned long flags;
 	struct irq_desc *desc;
@@ -951,6 +957,12 @@ static void msm_pinctrl_resume(void)
 
 	if (!msm_show_resume_irq_mask)
 		return;
+
+	for (j = 0;j < 8; j++) {
+		gpio_resume_irq[j].gic_resume_irq_num = 0;
+		memset(gpio_resume_irq[j].gic_resume_irq_name, 0, sizeof(gpio_resume_irq[j].gic_resume_irq_name));
+	}
+	gpio_irq_cnt = 0;
 
 	spin_lock_irqsave(&pctrl->lock, flags);
 	for_each_set_bit(i, pctrl->enabled_irqs, pctrl->chip.ngpio) {
@@ -965,8 +977,18 @@ static void msm_pinctrl_resume(void)
 				name = desc->action->name;
 
 			pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+
+			if (gpio_irq_cnt < 8) {
+				gpio_resume_irq[gpio_irq_cnt].gic_resume_irq_num = irq;
+				strncpy(gpio_resume_irq[gpio_irq_cnt].gic_resume_irq_name, name, sizeof(gpio_resume_irq[gpio_irq_cnt].gic_resume_irq_name));
+			}
+			gpio_irq_cnt++;
 		}
+		if (gpio_irq_cnt >= 8)
+			gpio_irq_cnt = 7;
 	}
+	if (gpio_irq_cnt >= 8)
+		gpio_irq_cnt = 7;
 	spin_unlock_irqrestore(&pctrl->lock, flags);
 }
 #else

@@ -17,12 +17,14 @@
 #include "camera.h"
 #include "msm_cci.h"
 #include "msm_camera_dt_util.h"
+#include "debugfs/msm_debugfs.h"
 
 /* Logging macro */
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
 #define SENSOR_MAX_MOUNTANGLE (360)
+extern struct mutex *msm_cci0_sensor_mutex;
 
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
 static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev);
@@ -689,6 +691,7 @@ int32_t msm_sensor_driver_probe(void *setting,
 
 	unsigned long                        mount_pos = 0;
 	uint32_t                             is_yuv;
+	int32_t                              camera_index = 0;
 
 	/* Validate input parameters */
 	if (!setting) {
@@ -967,6 +970,13 @@ CSID_TG:
 	}
 
 	pr_err("%s probe succeeded", slave_info->sensor_name);
+	camera_index = msm_debugfs_init(s_ctrl, slave_info);
+	if (camera_index < 0)
+		pr_err("initial camera debugfs fail!");
+	else {
+		msm_debugfs_set_status(camera_index, 1);
+		msm_read_otp(s_ctrl, slave_info);
+	}
 
 	s_ctrl->bypass_video_node_creation =
 		slave_info->bypass_video_node_creation;
@@ -1202,7 +1212,7 @@ static int32_t msm_sensor_driver_parse(struct msm_sensor_ctrl_t *s_ctrl)
 		goto FREE_MUTEX;
 	}
 
-	/* Initialize mutex */
+	s_ctrl->msm_cci0_mutex = msm_cci0_sensor_mutex;
 	mutex_init(s_ctrl->msm_sensor_mutex);
 
 	/* Initilize v4l2 subdev info */
@@ -1231,8 +1241,11 @@ FREE_DT_DATA:
 	kfree(s_ctrl->sensordata->power_info.cam_vreg);
 	kfree(s_ctrl->sensordata);
 FREE_MUTEX:
+
 	kfree(s_ctrl->msm_sensor_mutex);
 FREE_SENSOR_I2C_CLIENT:
+
+
 	kfree(s_ctrl->sensor_i2c_client);
 	return rc;
 }

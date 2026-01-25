@@ -46,6 +46,8 @@
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
+#include "ufs/ufshcd.h"
+#include "ufs/ufs.h"
 
 #define ALLOC_FAILURE_MSG	KERN_ERR "%s: Allocation failure during" \
 	" SCSI scanning, some SCSI devices might not be configured\n"
@@ -767,6 +769,9 @@ static int scsi_probe_lun(struct scsi_device *sdev, unsigned char *inq_result,
 static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 		int *bflags, int async)
 {
+	struct Scsi_Host *shost = sdev->host;
+	struct ufs_hba *hba = shost_priv(shost);
+
 	int ret;
 
 	/*
@@ -798,6 +803,8 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 	sdev->vendor = (char *) (sdev->inquiry + 8);
 	sdev->model = (char *) (sdev->inquiry + 16);
 	sdev->rev = (char *) (sdev->inquiry + 32);
+
+	hba->rev = sdev->rev;
 
 	if (strncmp(sdev->vendor, "ATA     ", 8) == 0) {
 		/*

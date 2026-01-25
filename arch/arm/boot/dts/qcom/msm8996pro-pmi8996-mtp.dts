@@ -15,10 +15,10 @@
 
 #include "msm8996pro.dtsi"
 #include "msm-pmi8996.dtsi"
-#include "msm8996-mtp.dtsi"
+#include "msm8996-mtp-zs570kl-SR1.dtsi"
 
 / {
-	model = "Qualcomm Technologies, Inc. MSM 8996pro + PMI8996 MTP";
+	model = "Qualcomm Technologies, Inc. MSM 8996pro + PMI8996 MTP ASUS";
 	compatible = "qcom,msm8996-mtp", "qcom,msm8996", "qcom,mtp";
-	qcom,board-id = <8 0>;
+	qcom,board-id = <82 0>;
 };

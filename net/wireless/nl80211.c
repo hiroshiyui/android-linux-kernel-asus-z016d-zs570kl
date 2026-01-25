@@ -1029,7 +1029,7 @@ static int nl80211_put_iface_combinations(struct wiphy *wiphy,
 nla_put_failure:
 	return -ENOBUFS;
 }
-
+#if 0
 #ifdef CONFIG_PM
 static int nl80211_send_wowlan_tcp_caps(struct cfg80211_registered_device *rdev,
 					struct sk_buff *msg)
@@ -1122,6 +1122,7 @@ static int nl80211_send_wowlan(struct sk_buff *msg,
 
 	return 0;
 }
+#endif
 #endif
 
 static int nl80211_send_coalesce(struct sk_buff *msg,
@@ -1598,6 +1599,7 @@ static int nl80211_send_wiphy(struct cfg80211_registered_device *rdev,
 		if (state->split)
 			break;
 	case 6:
+#if 0
 #ifdef CONFIG_PM
 		if (nl80211_send_wowlan(msg, rdev, state->split))
 			goto nla_put_failure;
@@ -1606,6 +1608,7 @@ static int nl80211_send_wiphy(struct cfg80211_registered_device *rdev,
 			break;
 #else
 		state->split_start++;
+#endif
 #endif
 	case 7:
 		if (nl80211_put_iftypes(msg, NL80211_ATTR_SOFTWARE_IFTYPES,
@@ -7157,7 +7160,19 @@ static int nl80211_dump_survey(struct sk_buff *skb,
 static bool nl80211_valid_wpa_versions(u32 wpa_versions)
 {
 	return !(wpa_versions & ~(NL80211_WPA_VERSION_1 |
-				  NL80211_WPA_VERSION_2));
+				  NL80211_WPA_VERSION_2 |
+				  /*WAPI*/
+				  NL80211_WAPI_VERSION_1 ));
+}
+
+static bool nl80211_valid_akm_suite(u32 akm)
+{
+	return akm == WLAN_AKM_SUITE_8021X ||
+		akm == WLAN_AKM_SUITE_PSK ||
+		akm == WLAN_AKM_SUITE_PSK_SHA256 ||
+		/* WAPI */
+		akm == WLAN_AKM_SUITE_WAPI_PSK ||
+		akm == WLAN_AKM_SUITE_WAPI_CERT;
 }
 
 static int nl80211_authenticate(struct sk_buff *skb, struct genl_info *info)
@@ -7339,7 +7354,7 @@ static int nl80211_crypto_settings(struct cfg80211_registered_device *rdev,
 
 	if (info->attrs[NL80211_ATTR_AKM_SUITES]) {
 		void *data;
-		int len;
+		int len, i;
 
 		data = nla_data(info->attrs[NL80211_ATTR_AKM_SUITES]);
 		len = nla_len(info->attrs[NL80211_ATTR_AKM_SUITES]);
@@ -7352,6 +7367,9 @@ static int nl80211_crypto_settings(struct cfg80211_registered_device *rdev,
 			return -EINVAL;
 
 		memcpy(settings->akm_suites, data, len);
+		for (i = 0; i < settings->n_akm_suites; i++)
+			if (!nl80211_valid_akm_suite(settings->akm_suites[i]))
+				return -EINVAL;
 	}
 
 	return 0;
@@ -8919,7 +8937,7 @@ static int nl80211_leave_mesh(struct sk_buff *skb, struct genl_info *info)
 
 	return cfg80211_leave_mesh(rdev, dev);
 }
-
+#if 0
 #ifdef CONFIG_PM
 static int nl80211_send_wowlan_patterns(struct sk_buff *msg,
 					struct cfg80211_registered_device *rdev)
@@ -8997,6 +9015,7 @@ static int nl80211_send_wowlan_tcp(struct sk_buff *msg,
 	return 0;
 }
 
+#if 0
 static int nl80211_get_wowlan(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
@@ -9064,7 +9083,8 @@ nla_put_failure:
 	nlmsg_free(msg);
 	return -ENOBUFS;
 }
-
+#endif
+#endif
 static int nl80211_parse_wowlan_tcp(struct cfg80211_registered_device *rdev,
 				    struct nlattr *attr,
 				    struct cfg80211_wowlan *trig)
@@ -9210,6 +9230,7 @@ static int nl80211_parse_wowlan_tcp(struct cfg80211_registered_device *rdev,
 	return 0;
 }
 
+#if 0
 static int nl80211_set_wowlan(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
@@ -9378,6 +9399,7 @@ static int nl80211_set_wowlan(struct sk_buff *skb, struct genl_info *info)
 	kfree(new_triggers.tcp);
 	return err;
 }
+#endif
 #endif
 
 static int nl80211_send_coalesce_rules(struct sk_buff *msg,
@@ -9874,7 +9896,6 @@ static int nl80211_update_ft_ies(struct sk_buff *skb, struct genl_info *info)
 		return -EOPNOTSUPP;
 
 	if (!info->attrs[NL80211_ATTR_MDID] ||
-	    !info->attrs[NL80211_ATTR_IE] ||
 	    !is_valid_ie_attr(info->attrs[NL80211_ATTR_IE]))
 		return -EINVAL;
 
@@ -10780,6 +10801,7 @@ static const struct genl_ops nl80211_ops[] = {
 		.internal_flags = NL80211_FLAG_NEED_NETDEV_UP |
 				  NL80211_FLAG_NEED_RTNL,
 	},
+#if 0
 #ifdef CONFIG_PM
 	{
 		.cmd = NL80211_CMD_GET_WOWLAN,
@@ -10797,6 +10819,7 @@ static const struct genl_ops nl80211_ops[] = {
 		.internal_flags = NL80211_FLAG_NEED_WIPHY |
 				  NL80211_FLAG_NEED_RTNL,
 	},
+#endif
 #endif
 	{
 		.cmd = NL80211_CMD_SET_REKEY_OFFLOAD,
@@ -12469,6 +12492,7 @@ void cfg80211_report_obss_beacon(struct wiphy *wiphy,
 }
 EXPORT_SYMBOL(cfg80211_report_obss_beacon);
 
+#if 0
 #ifdef CONFIG_PM
 void cfg80211_report_wowlan_wakeup(struct wireless_dev *wdev,
 				   struct cfg80211_wowlan_wakeup *wakeup,
@@ -12577,6 +12601,7 @@ void cfg80211_report_wowlan_wakeup(struct wireless_dev *wdev,
 	nlmsg_free(msg);
 }
 EXPORT_SYMBOL(cfg80211_report_wowlan_wakeup);
+#endif
 #endif
 
 void cfg80211_tdls_oper_request(struct net_device *dev, const u8 *peer,

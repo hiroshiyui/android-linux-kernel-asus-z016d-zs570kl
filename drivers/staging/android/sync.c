@@ -624,7 +624,7 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 
 	if (fence->status == 0) {
 		if (timeout > 0) {
-			pr_info("fence timeout on [%pK] after %dms\n", fence,
+			pr_info("fence timeout on [%pK]%s after %dms\n", fence, fence->name,
 				jiffies_to_msecs(timeout));
 			sync_dump();
 		}

@@ -38,6 +38,8 @@ enum {
 	POWER_SUPPLY_STATUS_DISCHARGING,
 	POWER_SUPPLY_STATUS_NOT_CHARGING,
 	POWER_SUPPLY_STATUS_FULL,
+	POWER_SUPPLY_STATUS_QUICK_CHARGING = 9,
+	POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING = 10,
 };
 
 enum {
@@ -259,7 +261,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_DIE_HEALTH,
 	POWER_SUPPLY_PROP_CONNECTOR_HEALTH,
 	POWER_SUPPLY_PROP_HW_CURRENT_MAX,
-	POWER_SUPPLY_PROP_REAL_TYPE,
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT,
 	/* Properties of type `const char *' */
@@ -267,6 +268,8 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 	POWER_SUPPLY_PROP_SERIAL_NUMBER,
 	POWER_SUPPLY_PROP_BATTERY_TYPE,
+        /* ASUS_BSP : USB Traffic Monitor */
+        POWER_SUPPLY_PROP_REFRESH_TIMER,
 };
 
 enum power_supply_type {
@@ -280,7 +283,9 @@ enum power_supply_type {
 	POWER_SUPPLY_TYPE_USB_ACA,	/* Accessory Charger Adapters */
 	POWER_SUPPLY_TYPE_USB_HVDCP,	/* High Voltage DCP */
 	POWER_SUPPLY_TYPE_USB_HVDCP_3,	/* Efficient High Voltage DCP */
+	POWER_SUPPLY_TYPE_USB_C,	/*Type-C */
 	POWER_SUPPLY_TYPE_USB_PD,	/* Power Delivery */
+	POWER_SUPPLY_TYPE_USB_PD_DRP,	/*Type-C PD DRP*/
 	POWER_SUPPLY_TYPE_WIRELESS,	/* Accessory Charger Adapters */
 	POWER_SUPPLY_TYPE_USB_FLOAT,	/* Floating charger */
 	POWER_SUPPLY_TYPE_BMS,		/* Battery Monitor System */

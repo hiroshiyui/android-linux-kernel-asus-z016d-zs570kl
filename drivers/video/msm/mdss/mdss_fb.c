@@ -92,6 +92,25 @@ static u32 mdss_fb_pseudo_palette[16] = {
 	0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff
 };
 
+uint32_t Lut_fi[33] = {
+	0, 69, 147, 234, 328,
+	429, 537, 650, 768, 897,
+	1043, 1201, 1368, 1540, 1713,
+	1884, 2048, 2212, 2383, 2556,
+	2728, 2895, 3052, 3199, 3328,
+	3446, 3559, 3666, 3768, 3862,
+	3948, 4026, 4095
+};
+uint32_t Lut_cc[33] = {
+	0x000000FF, 0x00000116, 0x0000012E, 0x00000146, 0x0000015E,
+	0x00000176, 0x0000018E, 0x000001A6, 0x000001BE, 0x000001D6,
+	0x000001EE, 0x00000205, 0x0000021D, 0x00000235, 0x0000024D,
+	0x00000265, 0x0000027D, 0x00000295, 0x000002AC, 0x000002C4,
+	0x000002DC, 0x000002F3, 0x0000030B, 0x00000323, 0x0000033A,
+	0x00000352, 0x0000036A, 0x00000381, 0x00000399, 0x000003B1,
+	0x000003C8, 0x000003E0, 0x000003F8
+};
+
 static struct msm_mdp_interface *mdp_instance;
 
 static int mdss_fb_register(struct msm_fb_data_type *mfd);
@@ -1193,12 +1212,14 @@ static int mdss_fb_init_panel_modes(struct msm_fb_data_type *mfd,
 	return 0;
 }
 
+struct msm_fb_data_type *g_mfd;
 static int mdss_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = NULL;
 	struct mdss_panel_data *pdata;
 	struct fb_info *fbi;
 	int rc;
+	struct msmfb_mdp_pp mdp_pp;
 
 	if (fbi_list_index >= MAX_FBI_LIST)
 		return -ENOMEM;
@@ -1342,6 +1363,32 @@ static int mdss_fb_probe(struct platform_device *pdev)
 			pr_err("failed to register input handler\n");
 
 	INIT_DELAYED_WORK(&mfd->idle_notify_work, __mdss_fb_idle_notify_work);
+
+	if(mfd->index == 0) {
+		g_mfd = mfd;
+		printk(KERN_EMERG "[DISP] Set True2life initail value for FB0\n");
+		memset(&mdp_pp, 0x00 , sizeof(struct msmfb_mdp_pp));
+		mdp_pp.data.ad_init_cfg.params.init.i_control[0] = 0x07;
+		mdp_pp.data.ad_init_cfg.params.init.i_control[1] = 198;
+		mdp_pp.data.ad_init_cfg.params.init.black_lvl = 0;
+		mdp_pp.data.ad_init_cfg.params.init.white_lvl = 0x3FF;
+		mdp_pp.data.ad_init_cfg.params.init.var = 0x65;
+		mdp_pp.data.ad_init_cfg.params.init.limit_ampl = 240;
+		mdp_pp.data.ad_init_cfg.params.init.i_dither = 0;
+		mdp_pp.data.ad_init_cfg.params.init.slope_max = 0x60;
+		mdp_pp.data.ad_init_cfg.params.init.slope_min = 32;
+		mdp_pp.data.ad_init_cfg.params.init.dither_ctl = 0x05;
+		mdp_pp.data.ad_init_cfg.params.init.format = 0x03;
+		mdp_pp.data.ad_init_cfg.params.init.auto_size = 0;
+		mdp_pp.data.ad_init_cfg.params.init.frame_w = 1080;
+		mdp_pp.data.ad_init_cfg.params.init.frame_h = 1920;
+		memcpy(mdp_pp.data.ad_init_cfg.params.init.asym_lut, Lut_fi, sizeof(uint32_t) * 33);
+		memcpy(mdp_pp.data.ad_init_cfg.params.init.color_corr_lut, Lut_cc, sizeof(uint32_t) * 33);
+		mdp_pp.op = mdp_op_ad_cfg;
+		mdp_pp.data.ad_init_cfg.ops = MDP_PP_OPS_ENABLE | MDP_PP_AD_INIT;
+		rc = mdss_mdp_ad_config(mfd, &mdp_pp.data.ad_init_cfg);
+		rc = 0;
+	}
 
 	return rc;
 }
@@ -1552,12 +1599,20 @@ static int mdss_fb_resume(struct platform_device *pdev)
 #endif
 
 #ifdef CONFIG_PM_SLEEP
+extern int alstate;
 static int mdss_fb_pm_suspend(struct device *dev)
 {
 	struct msm_fb_data_type *mfd = dev_get_drvdata(dev);
 
+	if (alstate) {
+		printk(KERN_EMERG"[DISP]%s Always on Skip pm_suspend\n",__func__);
+		return 0;
+	}
+
 	if (!mfd)
 		return -ENODEV;
+
+	printk(KERN_EMERG"[DISP]mdss_fb_pm_suspend FB index=%d\n", mfd->index);
 
 	dev_dbg(dev, "display pm suspend\n");
 
@@ -1567,8 +1622,15 @@ static int mdss_fb_pm_suspend(struct device *dev)
 static int mdss_fb_pm_resume(struct device *dev)
 {
 	struct msm_fb_data_type *mfd = dev_get_drvdata(dev);
+
+	if (alstate) {
+		printk(KERN_EMERG"[DISP]%s Always on Skip pm_resume\n",__func__);
+		return 0;
+	}
 	if (!mfd)
 		return -ENODEV;
+
+	printk(KERN_EMERG"[DISP]mdss_fb_pm_resume FB index=%d\n", mfd->index);
 
 	dev_dbg(dev, "display pm resume\n");
 
@@ -1797,7 +1859,7 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
 
 	cur_power_state = mfd->panel_power_state;
 
-	pr_debug("Transitioning from %d --> %d\n", cur_power_state,
+	printk(KERN_EMERG "[DSIP] BLANK : Transitioning from %d --> %d\n", cur_power_state,
 		req_power_state);
 
 	if (cur_power_state == req_power_state) {
@@ -1859,7 +1921,7 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 	}
 
 	cur_power_state = mfd->panel_power_state;
-	pr_debug("Transitioning from %d --> %d\n", cur_power_state,
+	printk(KERN_EMERG "[DSIP] UNBLANK : Transitioning from %d --> %d\n", cur_power_state,
 		MDSS_PANEL_POWER_ON);
 
 	if (mdss_panel_is_power_on_interactive(cur_power_state)) {
@@ -1942,7 +2004,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	if (mfd->dcm_state == DCM_ENTER)
 		return -EPERM;
 
-	pr_debug("%pS mode:%d\n", __builtin_return_address(0),
+	printk(KERN_DEBUG"[DEBUG]%pS mode:%d\n", __builtin_return_address(0),
 		blank_mode);
 
 	snprintf(trace_buffer, sizeof(trace_buffer), "fb%d blank %d",
@@ -2046,13 +2108,13 @@ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 		ret = 0;
 		goto end;
 	}
-	pr_debug("mode: %d\n", blank_mode);
+	printk(KERN_DEBUG"[DEBUG]%s mode: %d\n",__func__, blank_mode);
 
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 
 	if (pdata->panel_info.is_lpm_mode &&
 			blank_mode == FB_BLANK_UNBLANK) {
-		pr_debug("panel is in lpm mode\n");
+		printk(KERN_DEBUG"[DEBUG]fb_blank panel is in lpm mode\n");
 		mfd->mdp.configure_panel(mfd, 0, 1);
 		mdss_fb_set_mdp_sync_pt_threshold(mfd, mfd->panel.type);
 		pdata->panel_info.is_lpm_mode = false;
@@ -3643,9 +3705,6 @@ skip_commit:
 	if (IS_ERR_VALUE(ret) || !sync_pt_data->flushed) {
 		mdss_fb_release_kickoff(mfd);
 		mdss_fb_signal_timeline(sync_pt_data);
-		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
-			(mfd->mdp.signal_retire_fence))
-			mfd->mdp.signal_retire_fence(mfd, 1);
 	}
 
 	if (dynamic_dsi_switch) {
@@ -4473,7 +4532,6 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	struct mdp_frc_info *frc_info = NULL;
 	struct mdp_frc_info __user *frc_info_user;
 	struct msm_fb_data_type *mfd;
-	struct mdss_overlay_private *mdp5_data = NULL;
 
 	ret = copy_from_user(&commit, argp, sizeof(struct mdp_layer_commit));
 	if (ret) {
@@ -4485,20 +4543,9 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	if (!mfd)
 		return -EINVAL;
 
-	mdp5_data = mfd_to_mdp5_data(mfd);
-
 	if (mfd->panel_info->panel_dead) {
 		pr_debug("early commit return\n");
 		MDSS_XLOG(mfd->panel_info->panel_dead);
-		/*
-		 * In case of an ESD attack, since we early return from the
-		 * commits, we need to signal the outstanding fences.
-		 */
-		mdss_fb_release_fences(mfd);
-		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
-			mfd->mdp.signal_retire_fence && mdp5_data)
-			mfd->mdp.signal_retire_fence(mfd,
-						mdp5_data->retire_cnt);
 		return 0;
 	}
 

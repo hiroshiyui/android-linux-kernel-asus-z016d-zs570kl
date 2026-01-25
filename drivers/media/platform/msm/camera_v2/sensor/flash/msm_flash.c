@@ -18,24 +18,72 @@
 #include "msm_flash.h"
 #include "msm_camera_dt_util.h"
 #include "msm_cci.h"
+#include "../debugfs/msm_debugfs.h"
+#include <linux/fs.h>
+#include <linux/proc_fs.h>
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
+//ASUS_BSP+++
+#define LED1_TORCH_ENABLE		1
+#define LED1_TORCH_DISABLE 		0x3E  // 111110
+#define LED2_TORCH_ENABLE		( 1 << 2 )
+#define LED2_TORCH_DISABLE 		0x3B  // 111011
+#define LED3_TORCH_ENABLE		( 1 << 4 )
+#define LED3_TORCH_DISABLE 		0x2F  // 101111
+#define LED123_TORCH_ENABLE		LED1_TORCH_ENABLE | LED2_TORCH_ENABLE | LED3_TORCH_ENABLE
+#define LED123_TORCH_DISABLE 	0x2A  // 101010
+#define LED1_FLASH_ENABLE		( 1 << 1 )
+#define LED2_FLASH_ENABLE		( 1 << 3 )
+#define LED3_FLASH_ENABLE		( 1 << 5 )
+#define LED123_FLASH_ENABLE		LED1_FLASH_ENABLE | LED2_FLASH_ENABLE | LED3_FLASH_ENABLE
+
+#define FLASH_CURRENT_STEP 12
+
+#define LED1_FLASH_CURRENT_ADDR 0x00
+#define LED2_FLASH_CURRENT_ADDR 0x01
+#define LED3_FLASH_CURRENT_ADDR 0x02
+
+#define LED1_TORCH_CURRENT_ADDR 0x05
+#define LED2_TORCH_CURRENT_ADDR 0x06
+#define LED3_TORCH_CURRENT_ADDR 0x07
+
+//ASUS_BSP---
+
+#define MAX_TORCH_CURRENT 135
 
 DEFINE_MSM_MUTEX(msm_flash_mutex);
+
+//ASUS_BSP+++
+static struct msm_flash_ctrl_t *gfctrl = NULL;
+static struct i2c_driver sky81298_i2c_driver;
+//ASUS_BSP---
 
 static struct v4l2_file_operations msm_flash_v4l2_subdev_fops;
 static struct led_trigger *torch_trigger;
 
-static const struct of_device_id msm_flash_i2c_dt_match[] = {
-	{.compatible = "qcom,camera-flash"},
-	{}
-};
+#define DBG_TXT_BUF_SIZE 256
+static char debugTxtBuf[DBG_TXT_BUF_SIZE];
 
-static const struct i2c_device_id msm_flash_i2c_id[] = {
-	{"qcom,camera-flash", (kernel_ulong_t)NULL},
-	{ }
-};
+#define MAX_FLASH_CURRENT 750
+#define MAX_FLASH_DURATION 800
+
+#define FLASH_MODULE_DEFAULT_TORCH_CURRENT 200
+#define FLASH_MODULE_MAX_TORCH_CURRENT 250
+#define FLASH_MODULE_MIN_TORCH_CURRENT 25
+
+#define FLASH_MODULE_DEFAULT_CURRENT 1000
+#define FLASH_MODULE_MAX_CURRENT 1500
+#define FLASH_MODULE_MIN_CURRENT 250
+#define FLASH_MODULE_STEP_CURRENT 12 //Use both torch and Flash
+
+#define ISSMALLER(a,b) (((a)<(b))?(true):(false))
+
+static void create_proc_file(void);
+static int32_t msm_flash_i2c_write_custom_current(struct msm_flash_ctrl_t *flash_ctrl, struct msm_flash_cfg_data_t *flash_data);
+
+static struct v4l2_file_operations msm_flash_v4l2_subdev_fops;
+static struct led_trigger *torch_trigger;
 
 static const struct of_device_id msm_flash_dt_match[] = {
 	{.compatible = "qcom,camera-flash", .data = NULL},
@@ -52,27 +100,61 @@ static struct msm_flash_table *flash_table[] = {
 	&msm_pmic_flash_table
 };
 
-static struct msm_camera_i2c_fn_t msm_flash_qup_func_tbl = {
+
+//ASUS_BSP+++
+static struct msm_camera_i2c_fn_t msm_sensor_qup_func_tbl = {
 	.i2c_read = msm_camera_qup_i2c_read,
 	.i2c_read_seq = msm_camera_qup_i2c_read_seq,
 	.i2c_write = msm_camera_qup_i2c_write,
 	.i2c_write_table = msm_camera_qup_i2c_write_table,
+	.i2c_write_seq = msm_camera_qup_i2c_write_seq,
 	.i2c_write_seq_table = msm_camera_qup_i2c_write_seq_table,
 	.i2c_write_table_w_microdelay =
 		msm_camera_qup_i2c_write_table_w_microdelay,
+	.i2c_poll =  msm_camera_qup_i2c_poll,
 };
+//ASUS_BSP---
+//ASUS_BSP+++
 
-static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl = {
-	.i2c_read = msm_camera_cci_i2c_read,
-	.i2c_read_seq = msm_camera_cci_i2c_read_seq,
-	.i2c_write = msm_camera_cci_i2c_write,
-	.i2c_write_table = msm_camera_cci_i2c_write_table,
-	.i2c_write_seq_table = msm_camera_cci_i2c_write_seq_table,
-	.i2c_write_table_w_microdelay =
-		msm_camera_cci_i2c_write_table_w_microdelay,
-	.i2c_util = msm_sensor_cci_i2c_util,
-	.i2c_poll =  msm_camera_cci_i2c_poll,
+struct msm_camera_i2c_reg_setting_array settings_init  = {
+	.reg_setting_a =
+	{
+		{0x00, 0x43, 0x00},
+		{0x01, 0x43, 0x00},
+		{0x02, 0x11, 0x00},
+		{0x03, 0xFF, 0x00},
+		{0x05, 0x11, 0x00},
+		{0x06, 0x11, 0x00},
+		{0x07, 0x11, 0x00},
+		{0x0A, 0xA2, 0x00},
+	},
+	.size = 8,
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
 };
+struct msm_camera_i2c_reg_setting_array settings_brightness  = {
+	.reg_setting_a =
+	{
+		{0x08, 0x01, 0x00},
+	},
+	.size = 1,
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+struct msm_camera_i2c_reg_setting_array settings_off  = {
+	.reg_setting_a =
+	{
+		{0x08, 0x00, 0x00},
+	},
+	.size = 1,
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+//ASUS_BSP---
+
 
 void msm_torch_brightness_set(struct led_classdev *led_cdev,
 				enum led_brightness value)
@@ -144,7 +226,7 @@ static int32_t msm_flash_get_subdev_id(
 	struct msm_flash_ctrl_t *flash_ctrl, void *arg)
 {
 	uint32_t *subdev_id = (uint32_t *)arg;
-	CDBG("Enter\n");
+	CDBG("%s Enter\n",__func__);	//ASUS_BSP+++
 	if (!subdev_id) {
 		pr_err("failed\n");
 		return -EINVAL;
@@ -154,7 +236,6 @@ static int32_t msm_flash_get_subdev_id(
 	else
 		*subdev_id = flash_ctrl->subdev_id;
 
-	CDBG("subdev_id %d\n", *subdev_id);
 	CDBG("Exit\n");
 	return 0;
 }
@@ -164,13 +245,15 @@ static int32_t msm_flash_i2c_write_table(
 	struct msm_camera_i2c_reg_setting_array *settings)
 {
 	struct msm_camera_i2c_reg_setting conf_array;
-
+	int i = 0;
 	conf_array.addr_type = settings->addr_type;
 	conf_array.data_type = settings->data_type;
 	conf_array.delay = settings->delay;
 	conf_array.reg_setting = settings->reg_setting_a;
 	conf_array.size = settings->size;
-
+	for (i = 0; i < conf_array.size; i++) {
+	  pr_info("%s conf_array[%d] reg_addr: 0x%x, reg_data: 0x%x", __func__, i, conf_array.reg_setting[i].reg_addr, conf_array.reg_setting[i].reg_data);
+	}
 	/* Validate the settings size */
 	if ((!conf_array.size) || (conf_array.size > MAX_I2C_REG_SET)) {
 		pr_err("failed: invalid size %d", conf_array.size);
@@ -213,6 +296,7 @@ static int32_t msm_flash_i2c_init(
 		pr_err("%s:%d failed: Null pointer\n", __func__, __LINE__);
 		return -EFAULT;
 	}
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 
 #ifdef CONFIG_COMPAT
 	if (is_compat_task()) {
@@ -382,6 +466,7 @@ static int32_t msm_flash_i2c_release(
 {
 	int32_t rc = 0;
 
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 	if (!(&flash_ctrl->power_info) || !(&flash_ctrl->flash_i2c_client)) {
 		pr_err("%s:%d failed: %pK %pK\n",
 			__func__, __LINE__, &flash_ctrl->power_info,
@@ -397,6 +482,7 @@ static int32_t msm_flash_i2c_release(
 			__func__, __LINE__);
 		return -EINVAL;
 	}
+	flash_ctrl->flash_state = MSM_CAMERA_FLASH_RELEASE;	//ASUS_BSP+++
 	return 0;
 }
 
@@ -405,7 +491,7 @@ static int32_t msm_flash_off(struct msm_flash_ctrl_t *flash_ctrl,
 {
 	int32_t i = 0;
 
-	CDBG("Enter\n");
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 
 	for (i = 0; i < flash_ctrl->flash_num_sources; i++)
 		if (flash_ctrl->flash_trigger[i])
@@ -420,6 +506,118 @@ static int32_t msm_flash_off(struct msm_flash_ctrl_t *flash_ctrl,
 	CDBG("Exit\n");
 	return 0;
 }
+static int32_t msm_flash_i2c_turn_on_flash(
+  struct msm_flash_ctrl_t *flash_ctrl,
+	struct msm_flash_cfg_data_t *flash_data, int32_t bulb_ctrl)
+{
+	struct msm_camera_i2c_reg_setting conf_array;
+	struct msm_camera_i2c_reg_array current_data;
+	int32_t rc = -EINVAL;
+	if (!flash_data) {
+		return 0;
+	}
+	current_data.reg_addr = 0x08;
+	current_data.delay = 0x00;
+
+	conf_array.size = 1;
+	conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+	conf_array.delay = 0;
+	switch (bulb_ctrl) {
+			/* Flash case 1: turn on white bulb, 2: turn on yellow bulb, 3: turn on both bulbs */
+			/* Torch case 4: turn on white bulb, 5: turn on yellow bulb, 6: turn on both bulbs */
+			case 1:
+					current_data.reg_data = 0x08;
+					break;
+			case 2:
+					current_data.reg_data = 0x02;
+					break;
+			case 3:
+					current_data.reg_data = 0x0A;
+					break;
+			case 4:
+					current_data.reg_data = 0x04;
+					break;
+			case 5:
+					current_data.reg_data = 0x01;
+					break;
+			case 6:
+					current_data.reg_data = 0x05;
+					break;
+			default:
+					pr_err("Unrecogized flash bulb mode!");
+	}
+	conf_array.reg_setting = &current_data;
+	rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(
+	&flash_ctrl->flash_i2c_client, &conf_array);
+  return rc;
+}
+static int32_t msm_flash_set_bulb_ctrl(int32_t *bulb_ctrl, struct msm_flash_cfg_data_t *flash_data) {
+		int flash_cmd = 0;
+		if (!flash_data) {
+				return 0;
+		}
+		flash_cmd = flash_data->cfg_type;
+		switch (flash_cmd) {
+    case CFG_FLASH_LOW:
+			if (flash_data->flash_current[0] == -1 ) {
+					*bulb_ctrl = 4; // Turn on white bulb
+					CDBG("bulb_ctrl = 4");
+					flash_data->flash_current[0] = 0;
+			} else if (flash_data->flash_current[1] == -1) {
+					*bulb_ctrl = 5; // Turn on yellow bulb
+					CDBG("bulb_ctrl = 5");
+					flash_data->flash_current[1] = 0;
+			} else {
+					*bulb_ctrl = 6; // Turn on both bulb
+					CDBG("bulb_ctrl = 6");
+			}
+			break;
+    case CFG_FLASH_HIGH:
+      if (flash_data->flash_current[0] == -1 ) {
+					*bulb_ctrl = 1; // Turn on white bulb
+					CDBG("bulb_ctrl = 1");
+					flash_data->flash_current[0] = 0;
+			} else if (flash_data->flash_current[1] == -1) {
+					*bulb_ctrl = 2; // Turn on yellow bulb
+					CDBG("bulb_ctrl = 2");
+					flash_data->flash_current[1] = 0;
+			} else {
+					*bulb_ctrl = 3; // Turn on both bulb
+					CDBG("bulb_ctrl = 3");
+			}
+			break;
+    default:
+      pr_debug("%s:%d cfg_type %d do not need process here.\n", __func__, __LINE__,flash_data->cfg_type);
+      break;
+  }
+  return 0;
+}
+//ASUS_BSP+++
+static uint32_t get_flash_current_addr(int flashIndex) {
+	switch(flashIndex) {
+		case 1:
+			return LED2_FLASH_CURRENT_ADDR;
+		case 2:
+			return LED3_FLASH_CURRENT_ADDR;
+		case 0:
+		default:
+			return LED1_FLASH_CURRENT_ADDR;
+	}
+}
+
+static uint32_t get_torch_current_addr(int flashIndex) {
+	switch(flashIndex) {
+		case 1:
+			return LED2_TORCH_CURRENT_ADDR;
+		case 2:
+			return LED3_TORCH_CURRENT_ADDR;
+		case 0:
+		default:
+			return LED1_TORCH_CURRENT_ADDR;
+	}
+}
+//ASUS_BSP---
 
 static int32_t msm_flash_i2c_write_setting_array(
 	struct msm_flash_ctrl_t *flash_ctrl,
@@ -427,12 +625,13 @@ static int32_t msm_flash_i2c_write_setting_array(
 {
 	int32_t rc = 0;
 	struct msm_camera_i2c_reg_setting_array *settings = NULL;
-
+	int32_t bulb_ctrl = -1;
 	if (!flash_data->cfg.settings) {
 		pr_err("%s:%d failed: Null pointer\n", __func__, __LINE__);
 		return -EFAULT;
 	}
-
+	msm_flash_set_bulb_ctrl(&bulb_ctrl, flash_data);
+	msm_flash_i2c_write_custom_current(flash_ctrl, flash_data);
 	settings = kzalloc(sizeof(struct msm_camera_i2c_reg_setting_array),
 		GFP_KERNEL);
 	if (!settings) {
@@ -446,13 +645,16 @@ static int32_t msm_flash_i2c_write_setting_array(
 		pr_err("%s copy_from_user failed %d\n", __func__, __LINE__);
 		return -EFAULT;
 	}
-
-	rc = msm_flash_i2c_write_table(flash_ctrl, settings);
-	kfree(settings);
-
+	if (bulb_ctrl == -1) {
+		rc = msm_flash_i2c_write_table(flash_ctrl, settings);
+		kfree(settings);
+	} else {
+		rc = msm_flash_i2c_turn_on_flash(flash_ctrl, flash_data, bulb_ctrl);
 	if (rc < 0) {
 		pr_err("%s:%d msm_flash_i2c_write_table rc = %d failed\n",
 			__func__, __LINE__, rc);
+		}
+		kfree(settings);
 	}
 	return rc;
 }
@@ -465,7 +667,7 @@ static int32_t msm_flash_init(
 	int32_t rc = -EFAULT;
 	enum msm_flash_driver_type flash_driver_type = FLASH_DRIVER_DEFAULT;
 
-	CDBG("Enter");
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 
 	if (flash_ctrl->flash_state == MSM_CAMERA_FLASH_INIT) {
 		pr_err("%s:%d Invalid flash state = %d",
@@ -593,7 +795,7 @@ static int32_t msm_flash_low(
 	uint32_t curr = 0, max_current = 0;
 	int32_t i = 0;
 
-	CDBG("Enter\n");
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 	/* Turn off flash triggers */
 	for (i = 0; i < flash_ctrl->flash_num_sources; i++)
 		if (flash_ctrl->flash_trigger[i])
@@ -630,6 +832,8 @@ static int32_t msm_flash_high(
 	int32_t curr = 0;
 	int32_t max_current = 0;
 	int32_t i = 0;
+
+	printk("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 
 	/* Turn off torch triggers */
 	for (i = 0; i < flash_ctrl->torch_num_sources; i++)
@@ -683,7 +887,7 @@ static int32_t msm_flash_config(struct msm_flash_ctrl_t *flash_ctrl,
 
 	mutex_lock(flash_ctrl->flash_mutex);
 
-	CDBG("Enter %s type %d\n", __func__, flash_data->cfg_type);
+	pr_info("[LED_FLASH]@Enter %s type %d\n", __func__, flash_data->cfg_type);	//ASUS_BSP+++
 
 	switch (flash_data->cfg_type) {
 	case CFG_FLASH_INIT:
@@ -752,7 +956,7 @@ static long msm_flash_subdev_ioctl(struct v4l2_subdev *sd,
 	struct msm_flash_ctrl_t *fctrl = NULL;
 	void __user *argp = (void __user *)arg;
 
-	CDBG("Enter\n");
+	CDBG("[LED_FLASH]@%s\t \n", __func__);	//ASUS_BSP+++
 
 	if (!sd) {
 		pr_err("sd NULL\n");
@@ -997,7 +1201,13 @@ static int32_t msm_flash_get_dt_data(struct device_node *of_node,
 	}
 
 	/* Read the sub device */
-	rc = of_property_read_u32(of_node, "cell-index", &fctrl->pdev->id);
+//ASUS_BSP+++
+	if (fctrl->pdev) {
+		rc = of_property_read_u32(of_node, "cell-index", &fctrl->pdev->id);
+	} else {
+		rc = of_property_read_u32(of_node, "cell-index", &fctrl->subdev_id);
+	}
+//ASUS_BSP---
 	if (rc < 0) {
 		pr_err("failed rc %d\n", rc);
 		return rc;
@@ -1060,7 +1270,7 @@ static long msm_flash_subdev_do_ioctl(
 	struct msm_flash_init_info_t32 flash_init_info32;
 	struct msm_flash_init_info_t flash_init_info;
 
-	CDBG("Enter");
+	CDBG("[[LED_FLASH]]@%s\t \n", __func__);	//ASUS_BSP+++
 
 	if (!file || !arg) {
 		pr_err("%s:failed NULL parameter\n", __func__);
@@ -1131,31 +1341,50 @@ static long msm_flash_subdev_fops_ioctl(struct file *file,
 	return video_usercopy(file, cmd, arg, msm_flash_subdev_do_ioctl);
 }
 #endif
+//ASUS_BSP+++
 
-static int msm_camera_flash_i2c_probe(struct i2c_client *client,
-	const struct i2c_device_id *id)
+static void __exit msm_flash_sky81298_i2c_remove(void)
+{
+	i2c_del_driver(&sky81298_i2c_driver);
+	return;
+}
+
+static const struct of_device_id sky81298_trigger_dt_match[] = {
+	{.compatible = "qcom,flash-qup", .data = NULL},
+	{}
+};
+
+MODULE_DEVICE_TABLE(of, sky81298_trigger_dt_match);
+
+static const struct i2c_device_id sky81298_i2c_id[] = {
+	{"qcom,flash-qup", (kernel_ulong_t)NULL},
+	{ }
+};
+
+static int msm_flash_sky81298_i2c_probe(struct i2c_client *client,
+		const struct i2c_device_id *id)
 {
 	int32_t rc = 0;
 	struct msm_flash_ctrl_t *flash_ctrl = NULL;
 
-	CDBG("Enter\n");
-
+	pr_info("[LED_FLASH]@%s entry\n", __func__);
 	if (client == NULL) {
-		pr_err("msm_flash_i2c_probe: client is null\n");
+		pr_err("%s: client is null\n", __func__);
 		return -EINVAL;
+	}
+
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
+		pr_err("%s: i2c_check_functionality failed\n", __func__);
+		rc = -EINVAL;
 	}
 
 	flash_ctrl = kzalloc(sizeof(struct msm_flash_ctrl_t), GFP_KERNEL);
-	if (!flash_ctrl)
+	if (!flash_ctrl) {
+		pr_err("%s:%d failed no memory\n", __func__, __LINE__);
 		return -ENOMEM;
+	}
 
 	memset(flash_ctrl, 0, sizeof(struct msm_flash_ctrl_t));
-
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
-		pr_err("i2c_check_functionality failed\n");
-		kfree(flash_ctrl);
-		return -EINVAL;
-	}
 
 	rc = msm_flash_get_dt_data(client->dev.of_node, flash_ctrl);
 	if (rc < 0) {
@@ -1169,18 +1398,22 @@ static int msm_camera_flash_i2c_probe(struct i2c_client *client,
 	flash_ctrl->power_info.dev = &client->dev;
 	flash_ctrl->flash_device_type = MSM_CAMERA_I2C_DEVICE;
 	flash_ctrl->flash_mutex = &msm_flash_mutex;
-	flash_ctrl->flash_i2c_client.i2c_func_tbl = &msm_flash_qup_func_tbl;
+	flash_ctrl->flash_i2c_client.i2c_func_tbl = &msm_sensor_qup_func_tbl;
+
 	flash_ctrl->flash_i2c_client.client = client;
+	flash_ctrl->flash_i2c_client.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	// since the rx/tx function in msm_camera_qup_i2c will shift the slave addr right by 1 bit,
+	// shift the address left by 1-bit here to prevent mis-match when using.
+	flash_ctrl->flash_i2c_client.client->addr <<= 1;
+	flash_ctrl->flash_driver_type = FLASH_DRIVER_I2C;
 
 	/* Initialize sub device */
-	v4l2_subdev_init(&flash_ctrl->msm_sd.sd, &msm_flash_subdev_ops);
+	v4l2_i2c_subdev_init(&flash_ctrl->msm_sd.sd, client, &msm_flash_subdev_ops);
 	v4l2_set_subdevdata(&flash_ctrl->msm_sd.sd, flash_ctrl);
 
 	flash_ctrl->msm_sd.sd.internal_ops = &msm_flash_internal_ops;
 	flash_ctrl->msm_sd.sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	snprintf(flash_ctrl->msm_sd.sd.name,
-		ARRAY_SIZE(flash_ctrl->msm_sd.sd.name),
-		"msm_camera_flash");
+
 	media_entity_init(&flash_ctrl->msm_sd.sd.entity, 0, NULL, 0);
 	flash_ctrl->msm_sd.sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV;
 	flash_ctrl->msm_sd.sd.entity.group_id = MSM_CAMERA_SUBDEV_FLASH;
@@ -1189,16 +1422,34 @@ static int msm_camera_flash_i2c_probe(struct i2c_client *client,
 
 	CDBG("%s:%d flash sd name = %s", __func__, __LINE__,
 		flash_ctrl->msm_sd.sd.entity.name);
-	msm_flash_v4l2_subdev_fops = v4l2_subdev_fops;
+
+	msm_cam_copy_v4l2_subdev_fops(&msm_flash_v4l2_subdev_fops);
 #ifdef CONFIG_COMPAT
 	msm_flash_v4l2_subdev_fops.compat_ioctl32 =
 		msm_flash_subdev_fops_ioctl;
 #endif
 	flash_ctrl->msm_sd.sd.devnode->fops = &msm_flash_v4l2_subdev_fops;
 
-	CDBG("probe success\n");
-	return rc;
+	gfctrl = flash_ctrl;
+
+	create_proc_file();
+	msm_debugfs_flash_init(flash_ctrl);
+	pr_info("%s end\n", __func__);
+	return 0;
 }
+
+static struct i2c_driver sky81298_i2c_driver = {
+	.id_table = sky81298_i2c_id,
+	.probe  = msm_flash_sky81298_i2c_probe,
+	.remove = __exit_p(msm_flash_sky81298_i2c_remove),
+	.driver = {
+		.name = "qcom,flash-qup",
+		.owner = THIS_MODULE,
+		.of_match_table = sky81298_trigger_dt_match,
+	},
+};
+//ASUS_BSP---
+
 
 static int32_t msm_flash_platform_probe(struct platform_device *pdev)
 {
@@ -1232,9 +1483,9 @@ static int32_t msm_flash_platform_probe(struct platform_device *pdev)
 
 	flash_ctrl->flash_state = MSM_CAMERA_FLASH_RELEASE;
 	flash_ctrl->power_info.dev = &flash_ctrl->pdev->dev;
-	flash_ctrl->flash_device_type = MSM_CAMERA_PLATFORM_DEVICE;
+	flash_ctrl->flash_device_type = MSM_CAMERA_I2C_DEVICE;	//ASUS_BSP+++
 	flash_ctrl->flash_mutex = &msm_flash_mutex;
-	flash_ctrl->flash_i2c_client.i2c_func_tbl = &msm_sensor_cci_func_tbl;
+	flash_ctrl->flash_i2c_client.i2c_func_tbl = &msm_sensor_qup_func_tbl;	//ASUS_BSP+++
 	flash_ctrl->flash_i2c_client.cci_client = kzalloc(
 		sizeof(struct msm_camera_cci_client), GFP_KERNEL);
 	if (!flash_ctrl->flash_i2c_client.cci_client) {
@@ -1278,18 +1529,6 @@ static int32_t msm_flash_platform_probe(struct platform_device *pdev)
 	return rc;
 }
 
-MODULE_DEVICE_TABLE(of, msm_flash_i2c_dt_match);
-
-static struct i2c_driver msm_flash_i2c_driver = {
-	.id_table = msm_flash_i2c_id,
-	.probe  = msm_camera_flash_i2c_probe,
-	.remove = __exit_p(msm_camera_flash_i2c_remove),
-	.driver = {
-		.name = "qcom,camera-flash",
-		.owner = THIS_MODULE,
-		.of_match_table = msm_flash_i2c_dt_match,
-	},
-};
 
 MODULE_DEVICE_TABLE(of, msm_flash_dt_match);
 
@@ -1307,24 +1546,587 @@ static int __init msm_flash_init_module(void)
 	int32_t rc = 0;
 	CDBG("Enter\n");
 	rc = platform_driver_register(&msm_flash_platform_driver);
-	if (!rc)
-		return rc;
-
-	pr_err("platform probe for flash failed");
-
-	/* Perform i2c probe if platform probe fails. */
-	rc = i2c_add_driver(&msm_flash_i2c_driver);
 	if (rc)
 		pr_err("platform probe for flash failed");
 
-	return rc;
+	return i2c_add_driver(&sky81298_i2c_driver);	//ASUS_BSP+++
+
 }
 
 static void __exit msm_flash_exit_module(void)
 {
-	platform_driver_unregister(&msm_flash_platform_driver);
-	i2c_del_driver(&msm_flash_i2c_driver);
-	return;
+  platform_driver_unregister(&msm_flash_platform_driver);
+  i2c_del_driver(&sky81298_i2c_driver); //ASUS_BSP+++
+  return;
+}
+
+#define	FLASH_BRIGHTNESS_PROC_FILE	"driver/asus_flash_brightness"
+#define	FLASH_STATUS_PROC_FILE	"driver/flash_status"
+#define	ASUS_FLASH_CONTROL	"driver/asus_flash_control"
+#define	ASUS_TORCH_CONTROL	"driver/asus_torch_control"
+
+static struct proc_dir_entry *flash_brightness_proc_file;
+static struct proc_dir_entry *flash_status_proc_file;
+
+static int last_torch_val1;
+static int last_torch_val2;
+static int last_torch_val3;
+
+static int flash_status;
+static bool custom_cci_init = false;
+static int32_t msm_flash_i2c_write_custom_current(
+  struct msm_flash_ctrl_t *flash_ctrl,
+	struct msm_flash_cfg_data_t *flash_data)
+{
+  struct msm_camera_i2c_reg_setting conf_array;
+	unsigned i = 0;
+	int32_t rc = -EINVAL;
+	struct msm_camera_i2c_reg_array flash_current_data[3];
+	struct msm_camera_i2c_reg_array torch_current_data[3];
+	int flash_cmd = 0;
+	if (!flash_data) {
+		return 0;
+	}
+	flash_cmd = flash_data->cfg_type;
+	switch (flash_cmd) {
+		case CFG_FLASH_LOW:
+			for(i = 0; i < 3; i++) {
+				torch_current_data[i].reg_addr = 0x05 + i;
+				torch_current_data[i].reg_data = ((flash_data->flash_current[i] & 0x1f));
+				torch_current_data[i].delay = 0x00;
+				pr_info("%s:%d reg_addr: 0x%x, reg_data: 0x%x\n", __func__, __LINE__,
+						torch_current_data[i].reg_addr, torch_current_data[i].reg_data);
+			}
+			conf_array.reg_setting = torch_current_data;
+			conf_array.size = 3;
+			conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+			conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+			conf_array.delay = 0;
+			rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(
+		&flash_ctrl->flash_i2c_client, &conf_array);
+			if (rc < 0)
+				pr_err("%s:%d I2C write fail.\n", __func__, __LINE__);
+			break;
+		case CFG_FLASH_HIGH:
+			for(i = 0; i < 3; i++) {
+				flash_current_data[i].reg_addr = 0x00 + i;
+				flash_current_data[i].reg_data = ((flash_data->flash_current[i] & 0x7f));
+				flash_current_data[i].delay = 0x00;
+				pr_info("%s:%d reg_addr: 0x%x, reg_data: 0x%x\n", __func__, __LINE__,
+						flash_current_data[i].reg_addr, flash_current_data[i].reg_data);
+			}
+			conf_array.reg_setting = flash_current_data;
+			conf_array.size = 3;
+			conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+			conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+			conf_array.delay = 0;
+
+			rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(
+		&flash_ctrl->flash_i2c_client, &conf_array);
+			if (rc < 0)
+				pr_err("%s:%d I2C write fail.\n", __func__, __LINE__);
+			break;
+		default:
+			pr_debug("%s:%d cfg_type %d do not need process here.\n", __func__, __LINE__,flash_data->cfg_type);
+			break;
+	}
+	return rc;
+}
+
+static int32_t translate_current_to_reg_data(int32_t flash_current, int8_t flash_mode)
+{
+	int32_t rc = -EINVAL;
+	switch (flash_mode) {
+		case 1: // FLASH
+			if (flash_current > FLASH_MODULE_MAX_CURRENT) {
+				pr_err("%s Invalid flash_current %d\n", __func__, flash_current);
+				return rc;
+			}
+			rc = flash_current / FLASH_MODULE_STEP_CURRENT;
+		break;
+		case 2: //TORCH
+			if (flash_current > FLASH_MODULE_MAX_TORCH_CURRENT) {
+				pr_err("%s Invalid torch_current %d\n", __func__, flash_current);
+				return rc;
+			}
+			rc = flash_current / FLASH_MODULE_STEP_CURRENT;
+			pr_info("%s original torch_current %d, reg torch_current %d\n", __func__, flash_current, rc);
+		break;
+	}
+	return rc;
+}
+
+static int32_t msm_flash_custom_init(struct msm_flash_ctrl_t *flash_ctrl)
+{
+	struct msm_camera_i2c_reg_setting conf_array;
+	uint16_t reg_data = 0;
+	unsigned i = 0;
+	int32_t rc = 0;
+  struct msm_camera_i2c_reg_array data[]=
+			{
+			  {0x00, 0x43, 0x00},
+				{0x01, 0x43, 0x00},
+				{0x02, 0x11, 0x00},
+				{0x03, 0xFF, 0x00},
+				{0x05, 0x11, 0x00},
+				{0x06, 0x11, 0x00},
+				{0x07, 0x11, 0x00},
+				{0x08, 0x00, 0x00},
+				{0x0A, 0xA2, 0x00}
+			};
+	custom_cci_init = true;
+
+	rc = msm_camera_power_up(&flash_ctrl->power_info,
+		flash_ctrl->flash_device_type,
+		&flash_ctrl->flash_i2c_client);
+	if (rc < 0) {
+		pr_err("%s msm_camera_power_up failed %d\n",
+			__func__, __LINE__);
+		return rc;
+	}
+
+	conf_array.reg_setting = data;
+	conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+	conf_array.delay = 0;
+	conf_array.size = 9;
+
+	rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(&flash_ctrl->flash_i2c_client, &conf_array);
+	if(rc < 0)
+		pr_err("%s:%d i2c write err on %d\n", __func__, __LINE__, i);
+	flash_ctrl->flash_i2c_client.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	for (i = 0; i < conf_array.size; i++){
+		rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_read(
+			&flash_ctrl->flash_i2c_client, data[i].reg_addr, &reg_data, MSM_CAMERA_I2C_BYTE_DATA);
+		if(rc < 0)
+			pr_err("%s:%d i2c_read err on %d, rc = %d\n", __func__, __LINE__, i, rc);
+		else
+		  pr_info("%s:%d i2c_read data[%d] = %d, rc = %d\n", __func__, __LINE__, i, reg_data, rc);
+	}
+
+	flash_ctrl->flash_state = MSM_CAMERA_FLASH_INIT;
+	return rc;
+}
+
+static int32_t msm_flash_custom_off(struct msm_flash_ctrl_t *flash_ctrl)
+{
+	struct msm_camera_i2c_reg_setting conf_array;
+	uint16_t reg_data = 0;
+	unsigned i = 0;
+	int32_t rc = 0;
+	struct msm_camera_i2c_reg_array data;
+	last_torch_val1 = 0;
+	last_torch_val2 = 0;
+	last_torch_val3 = 0;
+
+	conf_array.reg_setting = &data;
+	conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+
+	conf_array.delay = 0;
+	conf_array.reg_setting->reg_addr = 0x08;
+	conf_array.reg_setting->reg_data = 0x00;
+	conf_array.reg_setting->delay = 0x00;
+	conf_array.size = 1;
+
+	if (conf_array.addr_type != flash_ctrl->flash_i2c_client.addr_type) {
+		flash_ctrl->flash_i2c_client.addr_type = conf_array.addr_type;
+	}
+
+	rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(
+		&flash_ctrl->flash_i2c_client, &conf_array);
+	if(rc < 0)
+		pr_err("%s:%d i2c write err on %d\n", __func__, __LINE__, i);
+	for (i = 0; i < conf_array.size; i++){
+		rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_read(
+			&flash_ctrl->flash_i2c_client, data.reg_addr, &reg_data, MSM_CAMERA_I2C_BYTE_DATA);
+		if(rc < 0)
+			pr_err("%s:%d i2c_read err on %d, rc = %d\n", __func__, __LINE__, i, rc);
+	}
+
+	custom_cci_init = false;
+	return rc;
+}
+static int32_t msm_flash_asus_led_i2c_write(
+  struct msm_flash_ctrl_t *flash_ctrl)
+{
+  struct msm_camera_i2c_reg_setting conf_array;
+	int32_t rc = -EINVAL;
+	struct msm_camera_i2c_reg_array torch_current_data;
+	torch_current_data.reg_addr = 0x08;
+	torch_current_data.reg_data = 0x15;
+	torch_current_data.delay = 0x00;
+	pr_info("%s:%d reg_addr: 0x%x, reg_data: 0x%x\n", __func__, __LINE__,
+	torch_current_data.reg_addr, torch_current_data.reg_data);
+	conf_array.reg_setting = &torch_current_data;
+	conf_array.size = 1;
+	conf_array.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+	conf_array.data_type = MSM_CAMERA_I2C_BYTE_DATA;
+	conf_array.delay = 0;
+	rc = flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write_table(
+				&flash_ctrl->flash_i2c_client, &conf_array);
+	if (rc < 0)
+		pr_err("%s:%d I2C write fail.\n", __func__, __LINE__);
+	return rc;
+}
+
+static int msm_flash_brightness_proc_read(struct seq_file *buf, void *v)
+{
+		seq_printf(buf, "%d %d %d\n", last_torch_val1, last_torch_val2, last_torch_val3);
+		return 0;
+}
+
+static int msm_flash_brightness_proc_open(struct inode *inode, struct  file *file)
+{
+		return single_open(file, msm_flash_brightness_proc_read, NULL);
+}
+
+static ssize_t msm_flash_brightness_proc_write(struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
+{
+		int cur_torch_val1 = -1, cur_torch_val2 = -1, cur_torch_val3 = -1;
+		int MAX_FLASHLIGHT_CURRENT = MAX_TORCH_CURRENT;
+		int rc = 0, len;
+		struct msm_flash_ctrl_t *flash_ctrl = gfctrl;
+		struct msm_flash_cfg_data_t flash_data;
+		len = (count > DBG_TXT_BUF_SIZE - 1)? (DBG_TXT_BUF_SIZE-1):(count);
+		if (copy_from_user(debugTxtBuf, buf, len))
+			return -EFAULT;
+		debugTxtBuf[len] = 0; //add string end
+		sscanf(debugTxtBuf, "%d %d %d", &cur_torch_val1, &cur_torch_val2, &cur_torch_val3);
+		*ppos=len;
+		if (cur_torch_val1 <= 0 && cur_torch_val2 <= 0 && cur_torch_val3 <= 0) {
+			if (flash_ctrl->flash_state == MSM_CAMERA_FLASH_INIT && custom_cci_init) {
+				rc = msm_flash_custom_off(flash_ctrl);
+				if (rc < 0) {
+					pr_debug("%s:%d [AsusLedInterface] camera_flash_off failed rc = %d",
+							__func__, __LINE__, rc);
+					return rc;
+				}
+				rc = msm_flash_i2c_release(flash_ctrl);
+				if (rc < 0) {
+					pr_debug("%s:%d [AsusLedInterface] camera_flash_release failed rc = %d",
+							__func__, __LINE__, rc);
+					return rc;
+				}
+				flash_status = 0;
+			}
+			return len;
+		}
+
+		if (last_torch_val1 == cur_torch_val1 && last_torch_val2 == cur_torch_val2 && last_torch_val3 == cur_torch_val3) {
+				pr_info("[Asus Torch] input value does not change, do nothing\n");
+			return len;
+		}
+		if (last_torch_val1 > 99 || last_torch_val2 > 99 || last_torch_val3 > 99) {
+				pr_info("[Asus Torch] input value over the limit, do nothing\n");
+		}
+		last_torch_val1 = cur_torch_val1;
+		last_torch_val2 = cur_torch_val2;
+		last_torch_val3 = cur_torch_val3;
+		if (cur_torch_val1 != 0 || cur_torch_val2 != 0 || cur_torch_val3 != 0)
+				flash_status = 1;
+
+		if (flash_ctrl->flash_state != MSM_CAMERA_FLASH_INIT || !custom_cci_init) {
+				rc = msm_flash_custom_init(flash_ctrl);
+				if (rc < 0) {
+						pr_debug("%s:%d [AsusLedInterface] camera_flash_init failed rc = %d", __func__, __LINE__, rc);
+						rc = msm_flash_i2c_release(flash_ctrl);
+						if (rc < 0) {
+								pr_debug("%s:%d [AsusLedInterface] camera_flash_release failed rc = %d",
+										__func__, __LINE__, rc);
+								return rc;
+						}
+				return rc;
+				}
+		}
+		/*Set input current mA +++*/
+		{
+				cur_torch_val1 = cur_torch_val1 * MAX_FLASHLIGHT_CURRENT / 99;
+				cur_torch_val2 = cur_torch_val2 * MAX_FLASHLIGHT_CURRENT / 99;
+				cur_torch_val3 = cur_torch_val3 * MAX_FLASHLIGHT_CURRENT / 99;
+		}
+		/*Set input current mA ---*/
+
+		if (0 < cur_torch_val1 || 0 < cur_torch_val2 || 0 < cur_torch_val3) {
+				flash_data.flash_current[0] = translate_current_to_reg_data(cur_torch_val1, 2);
+				flash_data.flash_current[1] = translate_current_to_reg_data(cur_torch_val2, 2);
+				flash_data.flash_current[2] = translate_current_to_reg_data(cur_torch_val3, 2);
+				flash_data.cfg_type = CFG_FLASH_LOW;
+				if (flash_data.flash_current[1] < 0) {
+						pr_debug("%s:%d [AsusLedInterface] flash_current reg_data invalid",__func__, __LINE__);
+						return len;
+				}
+				if (flash_ctrl->flash_state != MSM_CAMERA_FLASH_INIT || !custom_cci_init) {
+						rc = msm_flash_custom_off(flash_ctrl);
+						if (rc < 0) {
+								pr_err("%s:%d [AsusLedInterface] camera_flash_off failed rc = %d",
+										__func__, __LINE__, rc);
+								return rc;
+						}
+				} else {
+						msm_flash_i2c_write_custom_current(flash_ctrl, &flash_data);
+						msm_flash_asus_led_i2c_write(flash_ctrl);
+				}
+		}
+		return len;
+}
+
+static const struct file_operations flash_brightness_fops = {
+	.owner = THIS_MODULE,
+	.open = msm_flash_brightness_proc_open,
+	.read = seq_read,
+	.write = msm_flash_brightness_proc_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int flash_status_read(struct seq_file *buf, void *v)
+{
+	seq_printf(buf, "%d\n", flash_status);
+	return 0;
+}
+
+static int flash_status_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, flash_status_read, NULL);
+}
+
+static const struct file_operations flash_status_proc_fops = {
+	.open		= flash_status_open,
+	.read		= seq_read,
+};
+static ssize_t enable_flash(struct msm_flash_ctrl_t* flash_ctrl, struct msm_camera_power_ctrl_t *power_info) {
+	int32_t rc = 0;
+	if( flash_ctrl->flash_state != MSM_CAMERA_FLASH_INIT ){
+		//  set gpio high , to write i2c
+		gpio_set_value_cansleep(
+			power_info->gpio_conf->gpio_num_info->
+			gpio_num[SENSOR_GPIO_FL_EN],
+			GPIO_OUT_HIGH);
+
+		rc = msm_flash_i2c_write_table(flash_ctrl, &settings_init);
+		if (rc < 0) {
+			pr_err("%s:%d msm_flash_i2c_write_table rc = %d failed\n",
+				__func__, __LINE__, rc);
+			 return rc;
+		}
+		flash_ctrl->flash_state = MSM_CAMERA_FLASH_INIT;
+	}
+	return 0;
+}
+
+static ssize_t disable_flash(struct msm_flash_ctrl_t* flash_ctrl, struct msm_camera_power_ctrl_t *power_info) {
+	int32_t rc = 0;
+	if( flash_ctrl->flash_state != MSM_CAMERA_FLASH_RELEASE )
+	{
+		rc = msm_flash_i2c_write_table(flash_ctrl, &settings_off);
+		if (rc < 0) {
+			pr_err("%s:%d msm_flash_i2c_write_table rc = %d failed\n",
+				__func__, __LINE__, rc);
+			return rc;
+		}
+		gpio_set_value_cansleep(
+			power_info->gpio_conf->gpio_num_info->
+			gpio_num[SENSOR_GPIO_FL_EN],
+			GPIO_OUT_LOW);
+		flash_ctrl->flash_state = MSM_CAMERA_FLASH_RELEASE;
+	}
+	return 0;
+}
+
+static ssize_t flash_control_write(struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
+{
+	int32_t rc = 0, len;
+	struct msm_flash_ctrl_t *flash_ctrl = gfctrl;
+	struct msm_camera_power_ctrl_t *power_info = NULL;
+	int flash_current = -1, i = 0;
+	u32 led_ctrl = 0;
+	u32 led_setting[3] = {0};
+	u32 flash_control = 0;
+	len = (count > DBG_TXT_BUF_SIZE - 1)? (DBG_TXT_BUF_SIZE-1):(count);
+	if (copy_from_user(debugTxtBuf, buf, len))
+			return -EFAULT;
+	debugTxtBuf[len] = 0; //add string end
+	/* led_ctrl : Open how many leds.
+	*             1. led_ctrl = 2 means turn on white/yellow leds simultaneously.
+	*             2. led_ctrl = 1 means turn on white only
+	*             3. led_ctrl = 0 means turn off the leds.
+	*  led_setting[0]: current for led 1 (Yellow)
+	*  led_setting[1]: current for led 2 (White)
+	*  led_setting[2]: current for led 3 (No use)  */
+	sscanf(debugTxtBuf, "%d %d %d %d", &led_ctrl, &led_setting[0], &led_setting[1], &led_setting[2]);
+	*ppos=len;
+	printk("[LED_FLASH]@%s:%d led_ctrl = %d, led_setting[0] = %d , led_setting[1] = %d, led_setting[2] = %d \n",
+	         __func__, __LINE__, led_ctrl, led_setting[0], led_setting[1], led_setting[2]);
+
+	if( led_ctrl > 2 || led_ctrl < 0 )
+	{
+		pr_err("%s:%d led_ctrl > 1 || led_ctrl < 0\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	if (!flash_ctrl) {
+		pr_err("%s:%d flash_ctrl NULL\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	power_info = &(flash_ctrl->power_info);
+	if(!power_info) {
+		pr_err("%s:%d power_info NULL\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	if( led_ctrl == 1) {
+		//  set led init
+		rc = enable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+
+		if (led_setting[0] == 1) flash_control |= LED1_FLASH_ENABLE;
+		if (led_setting[1] == 1) flash_control |= LED2_FLASH_ENABLE;
+		if (led_setting[2] == 1) flash_control |= LED3_FLASH_ENABLE;
+		settings_brightness.reg_setting_a[0].reg_data = flash_control;
+		rc = msm_flash_i2c_write_table(flash_ctrl, &settings_brightness);
+		if (rc < 0) {
+			pr_err("%s:%d msm_flash_i2c_write_table rc = %d failed\n",
+				__func__, __LINE__, rc);
+			return rc;
+		}
+	}
+	else if( led_ctrl == 0)
+	{
+		rc = disable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+	}
+	else if(led_ctrl == 2)
+	{
+		rc = enable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+
+		for (i = 0; i < 3; i++) {
+			if (led_setting[i] > 0) {
+				flash_current = led_setting[i] / FLASH_CURRENT_STEP;
+				flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write(
+					&flash_ctrl->flash_i2c_client,
+					get_flash_current_addr(i), flash_current,
+					MSM_CAMERA_I2C_BYTE_DATA);
+			}
+		}
+	}
+
+	return len;
+}
+
+static const struct file_operations flash_control_fops = {
+	.owner = THIS_MODULE,
+	.open = msm_flash_brightness_proc_open,
+	.read = seq_read,
+	.write = flash_control_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+static ssize_t torch_control_write(struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
+{
+	// gfctrl
+	int32_t rc = 0, len;
+	struct msm_flash_ctrl_t *flash_ctrl = gfctrl;
+	struct msm_camera_power_ctrl_t *power_info = NULL;
+	int flash_current = -1, i = 0;
+	u32 led_ctrl = 0;
+	u32 led_setting[3] = {0};
+	u32 flash_control = 0;
+	len = (count > DBG_TXT_BUF_SIZE - 1)? (DBG_TXT_BUF_SIZE-1):(count);
+	if (copy_from_user(debugTxtBuf, buf, len))
+			return -EFAULT;
+	debugTxtBuf[len] = 0; //add string end
+	sscanf(debugTxtBuf, "%d %d %d %d", &led_ctrl, &led_setting[0], &led_setting[1], &led_setting[2]);
+	*ppos=len;
+	printk("[LED_FLASH]@%s:%d led_ctrl = %d, led_setting[0] = %d , led_setting[1] = %d, led_setting[2] = %d \n",
+	    __func__, __LINE__, led_ctrl, led_setting[0], led_setting[1], led_setting[2]);
+
+	if( led_ctrl > 2 || led_ctrl < 0 )
+	{
+		pr_err("%s:%d led_ctrl > 1 || led_ctrl < 0\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	if (!flash_ctrl) {
+		pr_err("%s:%d flash_ctrl NULL\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	power_info = &(flash_ctrl->power_info);
+	if(!power_info) {
+		pr_err("%s:%d power_info NULL\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	if( led_ctrl == 1){
+		//  set led init
+		rc = enable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+
+		if (led_setting[0] == 1) flash_control |= LED1_TORCH_ENABLE;
+		if (led_setting[1] == 1) flash_control |= LED2_TORCH_ENABLE;
+		if (led_setting[2] == 1) flash_control |= LED3_TORCH_ENABLE;
+		settings_brightness.reg_setting_a[0].reg_data = flash_control;
+		rc = msm_flash_i2c_write_table(flash_ctrl, &settings_brightness);
+		if (rc < 0) {
+			pr_err("%s:%d msm_flash_i2c_write_table rc = %d failed\n",
+				__func__, __LINE__, rc);
+			return rc;
+		}
+	}
+	else if( led_ctrl == 0)
+	{
+		//  set led off
+		rc = disable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+	}
+	else if(led_ctrl == 2)
+	{
+		rc = enable_flash(flash_ctrl, power_info);
+		if (rc < 0) return rc;
+
+		for (i = 0; i < 3; i++) {
+			if (led_setting[i] > 0) {
+				flash_current = led_setting[i] / FLASH_CURRENT_STEP;
+				flash_ctrl->flash_i2c_client.i2c_func_tbl->i2c_write(
+					&flash_ctrl->flash_i2c_client,
+					get_torch_current_addr(i), flash_current,
+					MSM_CAMERA_I2C_BYTE_DATA);
+			}
+		}
+	}
+
+	return len;
+}
+
+static const struct file_operations torch_control_fops = {
+	.owner = THIS_MODULE,
+	.open = msm_flash_brightness_proc_open,
+	.read = seq_read,
+	.write = torch_control_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+
+static void create_proc_file(void)
+{
+		flash_brightness_proc_file = proc_create(FLASH_BRIGHTNESS_PROC_FILE, 0666, NULL, &flash_brightness_fops);
+		if (flash_brightness_proc_file) {
+				printk("%s flash_brightness_proc_file sucessed!\n", __func__);
+		} else {
+				printk("%s flash_brightness_proc_file failed!\n", __func__);
+		}
+		flash_status_proc_file = proc_create(FLASH_STATUS_PROC_FILE, 0666, NULL, &flash_status_proc_fops);
+		if (flash_status_proc_file) {
+				printk("%s flash_status_proc_file sucessed!\n", __func__);
+		} else {
+				printk("%s flash_status_proc_file failed!\n", __func__);
+		}
+		proc_create(ASUS_FLASH_CONTROL, 0666, NULL, &flash_control_fops);
+		proc_create(ASUS_TORCH_CONTROL, 0666, NULL, &torch_control_fops);
 }
 
 static struct msm_flash_table msm_pmic_flash_table = {

@@ -39,13 +39,17 @@
 #include <linux/input.h>
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
-#include <linux/input/synaptics_dsx_v2_6.h>
+#include <linux/input/synaptics_dsx.h>
+#include <linux/gpio.h>
 #include "synaptics_dsx_core.h"
 
-#define FW_IMAGE_NAME "synaptics/startup_fw_update.img"
-/*
+//<ASUS+>#define FW_IMAGE_NAME "synaptics/startup_fw_update.img"
+#define FW_IMAGE_NAME_ZS570KL "synaptics/PR2498085-s3508t_hybrid_cdm10_asus_00060008.img"
+
+//<ASUS+>/*
 #define DO_STARTUP_FW_UPDATE
-*/
+//<ASUS+>*/
+
 /*
 #ifdef DO_STARTUP_FW_UPDATE
 #ifdef CONFIG_FB
@@ -55,6 +59,20 @@
 #endif
 #endif
 */
+
+//<ASUS_focal+>
+#define DO_FOCAL_FW_UPDATE 1
+
+#if DO_FOCAL_FW_UPDATE
+
+static unsigned char CTPM_FW[] = {
+	#include "ASUS_TAURUS_3267_0xC0_NON16CH_20170208_app.i"
+};
+
+extern unsigned int cap_sel_status;
+#endif
+//<ASUS_focal->
+
 #define FORCE_UPDATE false
 #define DO_LOCKDOWN false
 
@@ -127,7 +145,8 @@ static int fwu_do_reflash(void);
 
 static int fwu_recovery_check_status(void);
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
+int fw_update_state = 0;
+
 static ssize_t fwu_sysfs_show_image(struct file *data_file,
 		struct kobject *kobj, struct bin_attribute *attributes,
 		char *buf, loff_t pos, size_t count);
@@ -180,7 +199,6 @@ static ssize_t fwu_sysfs_guest_code_block_count_show(struct device *dev,
 
 static ssize_t fwu_sysfs_write_guest_code_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count);
-#endif
 
 enum f34_version {
 	F34_V0 = 0,
@@ -652,7 +670,6 @@ struct synaptics_rmi4_fwu_handle {
 	struct work_struct fwu_work;
 };
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static struct bin_attribute dev_attr_data = {
 	.attr = {
 		.name = "data",
@@ -662,61 +679,66 @@ static struct bin_attribute dev_attr_data = {
 	.read = fwu_sysfs_show_image,
 	.write = fwu_sysfs_store_image,
 };
-#endif
 
 static struct device_attribute attrs[] = {
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 	__ATTR(dorecovery, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_do_recovery_store),
 	__ATTR(doreflash, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_do_reflash_store),
 	__ATTR(writeconfig, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_write_config_store),
 	__ATTR(readconfig, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_read_config_store),
 	__ATTR(configarea, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_config_area_store),
 	__ATTR(imagename, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_image_name_store),
 	__ATTR(imagesize, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_image_size_store),
 	__ATTR(blocksize, S_IRUGO,
 			fwu_sysfs_block_size_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(fwblockcount, S_IRUGO,
 			fwu_sysfs_firmware_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(configblockcount, S_IRUGO,
 			fwu_sysfs_configuration_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(dispconfigblockcount, S_IRUGO,
 			fwu_sysfs_disp_config_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(permconfigblockcount, S_IRUGO,
 			fwu_sysfs_perm_config_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(blconfigblockcount, S_IRUGO,
 			fwu_sysfs_bl_config_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(guestcodeblockcount, S_IRUGO,
 			fwu_sysfs_guest_code_block_count_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(writeguestcode, S_IWUSR | S_IWGRP,
-			NULL,
+			synaptics_rmi4_show_error,
 			fwu_sysfs_write_guest_code_store),
-#endif
 };
 
 static struct synaptics_rmi4_fwu_handle *fwu;
 
 DECLARE_COMPLETION(fwu_remove_complete);
+
+static unsigned int be_to_uint(const unsigned char *ptr)
+{
+	return (unsigned int)ptr[3] +
+			(unsigned int)ptr[2] * 0x100 +
+			(unsigned int)ptr[1] * 0x10000 +
+			(unsigned int)ptr[0] * 0x1000000;
+}
 
 static unsigned int le_to_uint(const unsigned char *ptr)
 {
@@ -1975,6 +1997,7 @@ static int fwu_write_f34_v5v6_blocks(unsigned char *block_ptr,
 	unsigned short blk;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
+	printk("%s fw update start\n", __func__);
 	base = fwu->f34_fd.data_base_addr;
 
 	block_number[1] |= (fwu->config_area << 5);
@@ -2020,7 +2043,9 @@ static int fwu_write_f34_v5v6_blocks(unsigned char *block_ptr,
 
 		block_ptr += fwu->block_size;
 	}
-
+	
+	printk("%s fw update finished\n", __func__);
+		
 	return 0;
 }
 
@@ -2211,7 +2236,8 @@ static int fwu_get_image_firmware_id(unsigned int *fw_id)
 		strptr = strnstr(fwu->image_name, "PR", MAX_IMAGE_NAME_LEN);
 		if (!strptr) {
 			dev_err(rmi4_data->pdev->dev.parent,
-					"%s: No valid PR number (PRxxxxxxx) found in image file name (%s)\n",
+					"%s: No valid PR number (PRxxxxxxx) "
+					"found in image file name (%s)\n",
 					__func__, fwu->image_name);
 			return -EINVAL;
 		}
@@ -2224,12 +2250,10 @@ static int fwu_get_image_firmware_id(unsigned int *fw_id)
 					__func__);
 			return -ENOMEM;
 		}
-		while ((index < MAX_FIRMWARE_ID_LEN - 1) && strptr[index] >= '0'
-						&& strptr[index] <= '9') {
+		while (strptr[index] >= '0' && strptr[index] <= '9') {
 			firmware_id[index] = strptr[index];
 			index++;
 		}
-		firmware_id[index] = '\0';
 
 		retval = sstrtoul(firmware_id, 10, (unsigned long *)fw_id);
 		kfree(firmware_id);
@@ -2269,10 +2293,12 @@ static enum flash_area fwu_go_nogo(void)
 {
 	int retval;
 	enum flash_area flash_area = NONE;
-	unsigned char ii;
+	//unsigned char ii;
 	unsigned char config_id_size;
 	unsigned int device_fw_id;
 	unsigned int image_fw_id;
+	unsigned int device_config_id;
+	unsigned int image_config_id;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
 	if (fwu->force_update) {
@@ -2302,7 +2328,9 @@ static enum flash_area fwu_go_nogo(void)
 			"%s: Image firmware ID = %d\n",
 			__func__, image_fw_id);
 
-	if (image_fw_id > device_fw_id) {
+	//if (image_fw_id > device_fw_id) {
+	//<ASUS+>
+	if (image_fw_id != device_fw_id) {
 		flash_area = UI_FIRMWARE;
 		goto exit;
 	} else if (image_fw_id < device_fw_id) {
@@ -2315,6 +2343,7 @@ static enum flash_area fwu_go_nogo(void)
 
 	/* Get device config ID */
 	retval = fwu_get_device_config_id();
+	device_config_id = be_to_uint(fwu->config_id);
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read device config ID\n",
@@ -2322,12 +2351,42 @@ static enum flash_area fwu_go_nogo(void)
 		flash_area = NONE;
 		goto exit;
 	}
+	dev_info(rmi4_data->pdev->dev.parent,
+			"%s: Device config ID = 0x%02x 0x%02x 0x%02x 0x%02x\n",
+			__func__,
+			fwu->config_id[0],
+			fwu->config_id[1],
+			fwu->config_id[2],
+			fwu->config_id[3]);
 
+	/* Get image config ID */
+	image_config_id = be_to_uint(fwu->img.ui_config.data);
+	dev_info(rmi4_data->pdev->dev.parent,
+			"%s: Image config ID = 0x%02x 0x%02x 0x%02x 0x%02x\n",
+			__func__,
+			fwu->img.ui_config.data[0],
+			fwu->img.ui_config.data[1],
+			fwu->img.ui_config.data[2],
+			fwu->img.ui_config.data[3]);
+			
 	if (fwu->bl_version == BL_V7 || fwu->bl_version == BL_V8)
 		config_id_size = V7_CONFIG_ID_SIZE;
 	else
 		config_id_size = V5V6_CONFIG_ID_SIZE;
 
+	//<ASUS+>	if (image_config_id > device_config_id) {
+	if (image_config_id != device_config_id) {	//<ASUS+>
+		dev_info(rmi4_data->pdev->dev.parent,
+				"%s: Image config ID not same with device config ID, need update config\n",
+				__func__);
+		flash_area = UI_CONFIG;
+		goto exit;
+	}
+
+	flash_area = NONE;
+
+	//original vendor source code
+	/*
 	for (ii = 0; ii < config_id_size; ii++) {
 		if (fwu->img.ui_config.data[ii] > fwu->config_id[ii]) {
 			flash_area = UI_CONFIG;
@@ -2338,7 +2397,7 @@ static enum flash_area fwu_go_nogo(void)
 		}
 	}
 
-	flash_area = NONE;
+	flash_area = NONE;*/
 
 exit:
 	if (flash_area == NONE) {
@@ -2616,7 +2675,6 @@ static int fwu_check_dp_configuration_size(void)
 	return 0;
 }
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static int fwu_check_pm_configuration_size(void)
 {
 	unsigned short block_count;
@@ -2633,7 +2691,6 @@ static int fwu_check_pm_configuration_size(void)
 
 	return 0;
 }
-#endif
 
 static int fwu_check_bl_configuration_size(void)
 {
@@ -2833,7 +2890,6 @@ static int fwu_write_dp_configuration(void)
 	return fwu_write_configuration();
 }
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static int fwu_write_pm_configuration(void)
 {
 	fwu->config_area = PM_CONFIG_AREA;
@@ -2843,7 +2899,6 @@ static int fwu_write_pm_configuration(void)
 
 	return fwu_write_configuration();
 }
-#endif
 
 static int fwu_write_flash_configuration(void)
 {
@@ -3051,7 +3106,6 @@ static int fwu_do_reflash(void)
 	return retval;
 }
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static int fwu_do_read_config(void)
 {
 	int retval;
@@ -3129,7 +3183,6 @@ exit:
 
 	return retval;
 }
-#endif
 
 static int fwu_do_lockdown_v7(void)
 {
@@ -3204,7 +3257,6 @@ static int fwu_do_lockdown_v5v6(void)
 	return retval;
 }
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static int fwu_start_write_guest_code(void)
 {
 	int retval;
@@ -3410,7 +3462,6 @@ exit:
 
 	return retval;
 }
-#endif
 
 static int fwu_start_reflash(void)
 {
@@ -3433,9 +3484,12 @@ static int fwu_start_reflash(void)
 	pr_notice("%s: Start of reflash process\n", __func__);
 
 	if (fwu->image == NULL) {
+		dev_info(rmi4_data->pdev->dev.parent,
+					"%s: TP ZS570KL\n",
+					__func__);
 		retval = secure_memcpy(fwu->image_name, MAX_IMAGE_NAME_LEN,
-				FW_IMAGE_NAME, sizeof(FW_IMAGE_NAME),
-				sizeof(FW_IMAGE_NAME));
+				FW_IMAGE_NAME_ZS570KL, sizeof(FW_IMAGE_NAME_ZS570KL),
+				sizeof(FW_IMAGE_NAME_ZS570KL));
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to copy image file name\n",
@@ -3457,8 +3511,8 @@ static int fwu_start_reflash(void)
 		}
 
 		dev_dbg(rmi4_data->pdev->dev.parent,
-				"%s: Firmware image size = %d\n",
-				__func__, (unsigned int)fw_entry->size);
+				"%s: Firmware image size = %ld\n",
+				__func__, fw_entry->size);
 
 		fwu->image = fw_entry->data;
 	}
@@ -3514,7 +3568,7 @@ static int fwu_start_reflash(void)
 	switch (flash_area) {
 	case UI_FIRMWARE:
 		retval = fwu_do_reflash();
-		rmi4_data->reset_device(rmi4_data, true);
+		rmi4_data->reset_device(rmi4_data, false);
 		break;
 	case UI_CONFIG:
 		retval = fwu_check_ui_configuration_size();
@@ -3525,7 +3579,7 @@ static int fwu_start_reflash(void)
 		if (retval < 0)
 			break;
 		retval = fwu_write_ui_configuration();
-		rmi4_data->reset_device(rmi4_data, true);
+		rmi4_data->reset_device(rmi4_data, false);
 		break;
 	case NONE:
 	default:
@@ -3612,7 +3666,6 @@ static int fwu_recovery_check_status(void)
 	return 0;
 }
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static int fwu_recovery_erase_all(void)
 {
 	int retval;
@@ -3806,26 +3859,382 @@ exit:
 
 	return retval;
 }
+
+//<ASUS_focal+>
+#if DO_FOCAL_FW_UPDATE
+int fts_6336GU_ctpm_fw_upgrade(struct synaptics_rmi4_data *rmi4_data, u8 *pbt_buf, u32 dw_lenth)
+{
+	u8 reg_val[2] = {0};
+    u8 buf[2] = {0};
+	u32 i = 0;
+	u32 packet_number;
+	u32 j;
+	u32 temp;
+	u32 lenght;
+	u32 fw_length;
+	u8 packet_buf[FTS_PACKET_LENGTH + 6];
+	u8 auc_i2c_write_buf[10];
+	u8 bt_ecc;
+
+	if(pbt_buf[0] != 0x02)
+	{
+		FTS_DBG("[FTS] FW first byte is not 0x02. so it is invalid \n");
+		return -1;
+	}
+
+	if(dw_lenth > 0x11f)
+	{
+		fw_length = ((u32)pbt_buf[0x100]<<8) + pbt_buf[0x101];
+		if(dw_lenth < fw_length)
+		{
+			FTS_DBG("[FTS] Fw length is invalid \n");
+			return -1;
+		}
+	}
+	else
+	{
+		FTS_DBG("[FTS] Fw length is invalid \n");
+		return -1;
+	}
+
+
+	for (i = 0; i < FTS_UPGRADE_LOOP; i++) 
+	{
+		/*********Step 1:Reset  CTPM *****/
+        buf[0] = FTS_RST_CMD_REG2;
+        buf[1] = FTS_UPGRADE_AA;
+		//fts_write_reg(FTS_RST_CMD_REG2, FTS_UPGRADE_AA);
+        cap_i2c_write(rmi4_data, buf, 2);
+		msleep(FTS_DELAY_TIME_AA);
+        
+        buf[0] = FTS_RST_CMD_REG2;
+        buf[1] = FTS_UPGRADE_55;
+		//fts_write_reg(client, FTS_RST_CMD_REG2, FTS_UPGRADE_55);
+        cap_i2c_write(rmi4_data, buf, 2);
+		msleep(FTS_DELAY_TIME_55);
+		/*********Step 2:Enter upgrade mode *****/
+		auc_i2c_write_buf[0] = FTS_UPGRADE_55;
+		cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+		auc_i2c_write_buf[0] = FTS_UPGRADE_AA;
+		cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+		msleep(10);
+		/*********Step 3:check READ-ID***********************/		
+		auc_i2c_write_buf[0] = FTS_READ_ID_REG;
+		auc_i2c_write_buf[1] = auc_i2c_write_buf[2] = auc_i2c_write_buf[3] =0x00;
+		reg_val[0] = 0x00;
+		reg_val[1] = 0x00;
+		cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 4, reg_val, 2);
+
+		if (reg_val[0] == FTS_UPGRADE_ID_1
+			&& reg_val[1] == FTS_UPGRADE_ID_2) 
+		{
+			FTS_DBG("[FTS] Step 3: GET CTPM ID OK,ID1 = 0x%x,ID2 = 0x%x\n",
+				reg_val[0], reg_val[1]);
+			break;
+		} 
+		else 
+		{
+			dev_err(rmi4_data->pdev->dev.parent, "[FTS] Step 3: GET CTPM ID FAIL,ID1 = 0x%x,ID2 = 0x%x\n",
+				reg_val[0], reg_val[1]);
+		}
+	}
+	if (i >= FTS_UPGRADE_LOOP)
+		return -EIO;
+
+	auc_i2c_write_buf[0] = FTS_READ_ID_REG;
+	auc_i2c_write_buf[1] = 0x00;
+	auc_i2c_write_buf[2] = 0x00;
+	auc_i2c_write_buf[3] = 0x00;
+	auc_i2c_write_buf[4] = 0x00;
+	cap_i2c_write(rmi4_data, auc_i2c_write_buf, 5);
+
+	/*Step 4:erase app and panel paramenter area*/
+	FTS_DBG("Step 4:erase app and panel paramenter area\n");
+	auc_i2c_write_buf[0] = FTS_ERASE_APP_REG;
+	cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+	msleep(FTS_DELAY_ERASE_FLASH_TIME);
+
+	for(i = 0;i < 200;i++)
+	{
+		auc_i2c_write_buf[0] = 0x6a;
+		auc_i2c_write_buf[1] = 0x00;
+		auc_i2c_write_buf[2] = 0x00;
+		auc_i2c_write_buf[3] = 0x00;
+		reg_val[0] = 0x00;
+		reg_val[1] = 0x00;
+		cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 4, reg_val, 2);
+		if(0xb0 == reg_val[0] && 0x02 == reg_val[1])
+		{
+			FTS_DBG("[FTS] erase app finished \n");
+			break;
+		}
+		msleep(50);
+	}
+
+	/*********Step 5:write firmware(FW) to ctpm flash*********/
+	bt_ecc = 0;
+	FTS_DBG("Step 5:write firmware(FW) to ctpm flash\n");
+
+	dw_lenth = fw_length;
+	packet_number = (dw_lenth) / FTS_PACKET_LENGTH;
+	packet_buf[0] = FTS_FW_WRITE_CMD;
+	packet_buf[1] = 0x00;
+
+	for (j = 0; j < packet_number; j++) 
+	{
+		temp = j * FTS_PACKET_LENGTH;
+		packet_buf[2] = (u8) (temp >> 8);
+		packet_buf[3] = (u8) temp;
+		lenght = FTS_PACKET_LENGTH;
+		packet_buf[4] = (u8) (lenght >> 8);
+		packet_buf[5] = (u8) lenght;
+
+		for (i = 0; i < FTS_PACKET_LENGTH; i++) 
+		{
+			packet_buf[6 + i] = pbt_buf[j * FTS_PACKET_LENGTH + i];
+			bt_ecc ^= packet_buf[6 + i];
+		}
+		
+		cap_i2c_write(rmi4_data, packet_buf, FTS_PACKET_LENGTH + 6);
+		
+		for(i = 0;i < 30;i++)
+		{
+			auc_i2c_write_buf[0] = 0x6a;
+			auc_i2c_write_buf[1] = 0x00;
+			auc_i2c_write_buf[2] = 0x00;
+			auc_i2c_write_buf[3] = 0x00;
+			reg_val[0] = 0x00;
+			reg_val[1] = 0x00;
+			cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 4, reg_val, 2);
+			if(0xb0 == (reg_val[0] & 0xf0) && (0x03 + (j % 0x0ffd)) == (((reg_val[0] & 0x0f) << 8) |reg_val[1]))
+			{
+				//FTS_DBG("[FTS] write a block data finished \n");
+				break;
+			}
+			msleep(1);
+		}
+	}
+
+	if ((dw_lenth) % FTS_PACKET_LENGTH > 0) 
+	{
+		temp = packet_number * FTS_PACKET_LENGTH;
+		packet_buf[2] = (u8) (temp >> 8);
+		packet_buf[3] = (u8) temp;
+		temp = (dw_lenth) % FTS_PACKET_LENGTH;
+		packet_buf[4] = (u8) (temp >> 8);
+		packet_buf[5] = (u8) temp;
+
+		for (i = 0; i < temp; i++) 
+		{
+			packet_buf[6 + i] = pbt_buf[packet_number * FTS_PACKET_LENGTH + i];
+			bt_ecc ^= packet_buf[6 + i];
+		}
+
+		cap_i2c_write(rmi4_data, packet_buf, temp + 6);
+
+		for(i = 0;i < 30;i++)
+		{
+			auc_i2c_write_buf[0] = 0x6a;
+			auc_i2c_write_buf[1] = 0x00;
+			auc_i2c_write_buf[2] = 0x00;
+			auc_i2c_write_buf[3] = 0x00;
+			reg_val[0] = 0x00;
+			reg_val[1] = 0x00;
+			cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 4, reg_val, 2);
+			if(0xb0 == (reg_val[0] & 0xf0) && (0x03 + (j % 0x0ffd)) == (((reg_val[0] & 0x0f) << 8) |reg_val[1]))
+			{
+				FTS_DBG("[FTS] write a block data finished \n");
+				break;
+			}
+			msleep(1);
+		}
+	}
+
+
+	/*********Step 6: read out checksum***********************/
+	FTS_DBG("Step 6: read out checksum\n");
+	auc_i2c_write_buf[0] = FTS_REG_ECC;
+	cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 1, reg_val, 1);
+	if (reg_val[0] != bt_ecc) 
+	{
+		dev_err(rmi4_data->pdev->dev.parent, "[FTS]--ecc error! FW=%02x bt_ecc=%02x\n",
+					reg_val[0],
+					bt_ecc);
+		return -EIO;
+	}
+
+	/*********Step 7: reset the new FW***********************/
+	FTS_DBG("Step 7: reset the new FW\n");
+	auc_i2c_write_buf[0] = 0x07;
+	cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+	msleep(300);	
+
+	return 0;
+}
+
+int fts_ctpm_fw_upgrade_with_i_file(struct synaptics_rmi4_data *rmi4_data)
+{
+	u8 *pbt_buf = NULL;
+	u8 reg_value;
+	u8 reg_addr;
+	int i_ret=0, err;
+	int fw_len = sizeof(CTPM_FW);
+	
+
+	/* check the controller id */
+	reg_addr = FTS_REG_ID;
+	err = cap_i2c_Read(rmi4_data, &reg_addr, 1, &reg_value, 1);
+	if (err < 0) {
+		dev_err(rmi4_data->pdev->dev.parent, "Chip ID read failed");
+		return -EIO;
+	}
+
+	
+	/*judge the fw that will be upgraded
+	* if illegal, then stop upgrade and return.
+	*/
+    printk("%s [FTS] reg_value = 0x%02x, FTS_CHIP_ID = 0x%02x\n", __func__, reg_value, FTS_CHIP_ID);
+	//if (reg_value==FTS_CHIP_ID)
+	//{
+		if (fw_len < 8 || fw_len > 48 * 1024) 
+		{
+			dev_err(rmi4_data->pdev->dev.parent, "%s:FW length error\n", __func__);
+			return -EIO;
+		}
+		pbt_buf = CTPM_FW;
+		i_ret = fts_6336GU_ctpm_fw_upgrade(rmi4_data, pbt_buf, sizeof(CTPM_FW));
+		if (i_ret != 0)
+			dev_err(rmi4_data->pdev->dev.parent, "%s:upgrade failed. err.\n",__func__);
+	//}
+	return i_ret;
+}
+
+int fts_ctpm_get_i_file_ver(void)
+{
+	u16 ui_sz;
+	ui_sz = sizeof(CTPM_FW);
+	if (ui_sz > 2)
+	{
+		return CTPM_FW[0x10a];
+	}
+
+	return 0x00;
+}
+
+int fts_ctpm_auto_upgrade(struct synaptics_rmi4_data *rmi4_data)
+{
+    u8 uc_host_fm_ver = FTS_REG_FW_VER;
+	u8 uc_tp_fm_ver;
+	int i_ret, err;
+
+    printk("%s start\n", __func__);
+	/* check the FW version */
+	err = cap_i2c_Read(rmi4_data, &uc_host_fm_ver, 1, &uc_tp_fm_ver, 1);
+	if (err < 0) {
+		dev_err(rmi4_data->pdev->dev.parent, "FW version read failed");
+		return -EIO;
+	}
+
+
+	uc_host_fm_ver = fts_ctpm_get_i_file_ver();
+    printk("%s uc_tp_fm_ver = 0x%02x, uc_host_fm_ver = 0x%02x\n", __func__, uc_tp_fm_ver, uc_host_fm_ver);
+	if (uc_tp_fm_ver == FTS_REG_FW_VER ||	uc_tp_fm_ver != uc_host_fm_ver ) 
+	{
+		msleep(100);
+        printk("[FTS] uc_tp_fm_ver = 0x%x, uc_host_fm_ver = 0x%x\n",uc_tp_fm_ver, uc_host_fm_ver);
+		dev_dbg(rmi4_data->pdev->dev.parent, "[FTS] uc_tp_fm_ver = 0x%x, uc_host_fm_ver = 0x%x\n",uc_tp_fm_ver, uc_host_fm_ver);
+		i_ret = fts_ctpm_fw_upgrade_with_i_file(rmi4_data);
+		if (i_ret == 0)	
+		{
+			msleep(300);
+			uc_host_fm_ver = fts_ctpm_get_i_file_ver();
+            printk("[FTS] upgrade to new version 0x%x\n",uc_host_fm_ver);
+			dev_dbg(rmi4_data->pdev->dev.parent, "[FTS] upgrade to new version 0x%x\n",uc_host_fm_ver);
+		} 
+		else
+		{
+			pr_err("[FTS] upgrade failed ret=%d.\n", i_ret);
+			return -EIO;
+		}
+	}
+    
+    uc_host_fm_ver = FTS_REG_FW_VER;
+    err = cap_i2c_Read(rmi4_data, &uc_host_fm_ver, 1, &uc_tp_fm_ver, 1);
+	if (err < 0) {
+		dev_err(rmi4_data->pdev->dev.parent, "FW version read failed");
+		return -EIO;
+	}
+
+
+	uc_host_fm_ver = fts_ctpm_get_i_file_ver();
+    printk("%s uc_tp_fm_ver = 0x%02x, uc_host_fm_ver = 0x%02x\n", __func__, uc_tp_fm_ver, uc_host_fm_ver);
+    
+    printk("%s end\n", __func__);
+    
+		rmi4_data->cap_fw_id = uc_host_fm_ver;
+	return 0;
+}
 #endif
+//<ASUS_focal->
 
 int synaptics_fw_updater(const unsigned char *fw_data)
 {
 	int retval;
+    //unsigned char addr=0x00;
+    //unsigned char buf_val=0x00;
+#if DO_FOCAL_FW_UPDATE
+    int ret;//<ASUS_focal+>
+#endif
+	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
+	mutex_lock(&(rmi4_data->rmi4_fw_mutex));
+	fw_update_state = 1;
+	printk("%s fw_update_state=%d start\n", __func__, fw_update_state);
 
-	if (!fwu)
+	if (!fwu) {
+		fw_update_state = 0;
+		printk("%s fw_update_state=%d end\n", __func__, fw_update_state);
 		return -ENODEV;
+	}
 
-	if (!fwu->initialized)
+	if (!fwu->initialized) {
+		fw_update_state = 0;
+		printk("%s fw_update_state=%d end\n", __func__, fw_update_state);
 		return -ENODEV;
+	}
 
-	if (fwu->in_ub_mode)
+	if (fwu->in_ub_mode) {
+		fw_update_state = 0;
+		printk("%s fw_update_state=%d end\n", __func__, fw_update_state);
 		return -ENODEV;
+	}
 
 	fwu->image = fw_data;
 
+    disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN)); //<ASUS_focal+>
 	retval = fwu_start_reflash();
-
+    enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN)); //<ASUS_focal+>
+    //<ASUS_focal+>
+#if DO_FOCAL_FW_UPDATE
+    printk("%s cap_sel_status =%d\n", __func__, cap_sel_status);
+    if(cap_sel_status) {
+        disable_irq(rmi4_data->irq); //<ASUS_focal+>
+        ret = fts_ctpm_auto_upgrade(rmi4_data);
+        enable_irq(rmi4_data->irq); //<ASUS_focal+>
+        if(ret < 0)
+            printk("%s [FTS][cap] ret = %d, update fw fail.\n", __func__, ret);
+        /*addr = 0xa6;
+        retval = cap_i2c_Read(rmi4_data, &addr, 1, &buf_val, 1);
+        if (retval < 0)
+            printk("%s [fts] retval = %d, addr=0x%02x\n", __func__, retval, addr);
+        rmi4_data->cap_fw_id = buf_val;*/
+    }
+#endif
+    //<ASUS_focal->
+    
+	fw_update_state = 0;
+	printk("%s fw_update_state=%d end\n", __func__, fw_update_state);
 	fwu->image = NULL;
+	mutex_unlock(&(rmi4_data->rmi4_fw_mutex));
 
 	return retval;
 }
@@ -3865,7 +4274,6 @@ static void fwu_startup_fw_update_work(struct work_struct *work)
 }
 #endif
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 static ssize_t fwu_sysfs_show_image(struct file *data_file,
 		struct kobject *kobj, struct bin_attribute *attributes,
 		char *buf, loff_t pos, size_t count)
@@ -3875,8 +4283,8 @@ static ssize_t fwu_sysfs_show_image(struct file *data_file,
 
 	if (count < fwu->config_size) {
 		dev_err(rmi4_data->pdev->dev.parent,
-				"%s: Not enough space (%d bytes) in buffer\n",
-				__func__, (unsigned int)count);
+				"%s: Not enough space (%ld bytes) in buffer\n",
+				__func__, count);
 		return -EINVAL;
 	}
 
@@ -4237,7 +4645,6 @@ exit:
 	fwu->image = NULL;
 	return retval;
 }
-#endif
 
 static void synaptics_rmi4_fwu_attn(struct synaptics_rmi4_data *rmi4_data,
 		unsigned char intr_mask)
@@ -4322,7 +4729,6 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 	fwu->do_lockdown = DO_LOCKDOWN;
 	fwu->initialized = true;
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 	retval = sysfs_create_bin_file(&rmi4_data->input_dev->dev.kobj,
 			&dev_attr_data);
 	if (retval < 0) {
@@ -4331,7 +4737,6 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 				__func__);
 		goto exit_free_mem;
 	}
-#endif
 
 	for (attr_count = 0; attr_count < ARRAY_SIZE(attrs); attr_count++) {
 		retval = sysfs_create_file(&rmi4_data->input_dev->dev.kobj,
@@ -4360,9 +4765,7 @@ exit_remove_attrs:
 				&attrs[attr_count].attr);
 	}
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 	sysfs_remove_bin_file(&rmi4_data->input_dev->dev.kobj, &dev_attr_data);
-#endif
 
 exit_free_mem:
 	kfree(fwu->image_name);
@@ -4393,9 +4796,7 @@ static void synaptics_rmi4_fwu_remove(struct synaptics_rmi4_data *rmi4_data)
 				&attrs[attr_count].attr);
 	}
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
 	sysfs_remove_bin_file(&rmi4_data->input_dev->dev.kobj, &dev_attr_data);
-#endif
 
 	kfree(fwu->read_config_buf);
 	kfree(fwu->image_name);

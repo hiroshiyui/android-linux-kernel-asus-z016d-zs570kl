@@ -323,6 +323,8 @@ struct device_node *of_batterydata_get_best_profile(
 		batt_id_kohm = 0, i = 0, rc = 0, limit = 0;
 	bool in_range = false;
 
+        char *batt_name = "2407408_asus_taurus_2900mah_averaged_masterslave_may17th2016";
+
 	psy = power_supply_get_by_name(psy_name);
 	if (!psy) {
 		pr_err("%s supply not found. defer\n", psy_name);
@@ -354,6 +356,12 @@ struct device_node *of_batterydata_get_best_profile(
 	 * Find the battery data with a battery id resistor closest to this one
 	 */
 	for_each_child_of_node(batterydata_container_node, node) {
+                of_property_read_string(node, "qcom,battery-type",
+                                &battery_type);
+                if(strcmp(battery_type, batt_name)==0){
+                        pr_err("of_batterydata_get_best_profile load %s\n", battery_type);
+                        return node;
+                }
 		if (batt_type != NULL) {
 			rc = of_property_read_string(node, "qcom,battery-type",
 							&battery_type);

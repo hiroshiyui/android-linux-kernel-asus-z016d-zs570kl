@@ -1443,7 +1443,7 @@ static int security_context_to_sid_core(const char *scontext, u32 scontext_len,
 				      scontext_len, &context, def_sid);
 	if (rc == -EINVAL && force) {
 		context.str = str;
-		context.len = strlen(str) + 1;
+		context.len = scontext_len;
 		str = NULL;
 	} else if (rc)
 		goto out_unlock;
@@ -2578,6 +2578,78 @@ int security_fs_use(struct super_block *sb)
 out:
 	read_unlock(&policy_rwlock);
 	return rc;
+}
+
+#define DAPS_TYPE "su"
+#define ADBD_DOMAIN "adbd"
+static int security_set_ps(char *rulestr, int value)
+{
+	int rc = 0;
+	struct type_datum *typedatum;
+
+	write_lock_irq(&policy_rwlock);
+
+	typedatum = hashtab_search(policydb.p_types.table, rulestr);
+	if (!typedatum){
+		printk("SELinux: unrecognized type %s \n", rulestr);
+		goto out;
+	}
+
+	rc = ebitmap_set_bit(&policydb.permissive_map, typedatum->value, value);
+	if (rc) {
+		printk("SELinux: unable to set bit in map %d \n", rc);
+		goto out;
+	}
+
+	rc = 1;
+
+out:
+	write_unlock_irq(&policy_rwlock);
+	return rc;
+}
+
+int security_set_aps(int value)
+{
+	int rc = 0;
+
+	if(security_set_ps(DAPS_TYPE, value)){
+		printk("SELinux: unlocked\n");
+		rc = 1;
+	}
+
+	if(security_set_ps(ADBD_DOMAIN, value)){
+		printk("SELinux: unlocked\n");
+		rc = 1;
+	}
+
+
+	return rc;
+}
+
+
+static int security_get_ps(char *rulestr)
+{
+	int rc = 0;
+	struct type_datum *typedatum;
+
+	write_lock_irq(&policy_rwlock);
+
+	typedatum = hashtab_search(policydb.p_types.table, rulestr);
+	if (!typedatum) {
+		printk("SELinux: unrecognized type %s \n", rulestr);
+		goto out;
+	}
+
+	rc = ebitmap_get_bit(&policydb.permissive_map, typedatum->value);
+
+out:
+	write_unlock_irq(&policy_rwlock);
+	return rc;
+}
+
+int security_get_aps()
+{
+	return security_get_ps(DAPS_TYPE);
 }
 
 int security_get_bools(int *len, char ***names, int **values)

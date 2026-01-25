@@ -33,6 +33,9 @@
 
 #include "power.h"
 
+bool g_resume_status;
+int pm_stay_unattended_period = 0;
+int pmsp_flag = 0;
 const char *pm_labels[] = { "mem", "standby", "freeze", NULL };
 const char *pm_states[PM_SUSPEND_MAX];
 
@@ -42,6 +45,18 @@ static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
 
 enum freeze_state __read_mostly suspend_freeze_state;
 static DEFINE_SPINLOCK(suspend_freeze_lock);
+
+DEFINE_TIMER(unattended_timer, unattended_timer_expired, 0, 0);
+
+void unattended_timer_expired(unsigned long data)
+{
+	printk("[PM]unattended_timer_expired\n");
+	ASUSEvtlog("[PM]unattended_timer_expired\n");
+	pm_stay_unattended_period += PM_UNATTENDED_TIMEOUT;
+	pmsp_flag=1;
+	asus_uts_print_active_locks();
+	mod_timer(&unattended_timer, jiffies + msecs_to_jiffies(PM_UNATTENDED_TIMEOUT));
+}
 
 void freeze_set_ops(const struct platform_freeze_ops *ops)
 {
@@ -368,6 +383,7 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 		if (!(suspend_test(TEST_CORE) || *wakeup)) {
 			trace_suspend_resume(TPS("machine_suspend"),
 				state, true);
+			suspend_happened = true;
 			error = suspend_ops->enter(state);
 			trace_suspend_resume(TPS("machine_suspend"),
 				state, false);
@@ -420,6 +436,10 @@ int suspend_devices_and_enter(suspend_state_t state)
 	if (error)
 		goto Close;
 
+	printk("[PM]unattended_timer: del_timer in %s\n", __func__);
+	del_timer(&unattended_timer);
+	pm_stay_unattended_period = 0;
+	g_resume_status = false;
 	suspend_console();
 	suspend_test_start();
 	error = dpm_suspend_start(PMSG_SUSPEND);
@@ -442,6 +462,9 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_test_finish("resume devices");
 	trace_suspend_resume(TPS("resume_console"), state, true);
 	resume_console();
+	printk("[PM]unattended_timer: mod_timer in %s\n", __func__);
+	mod_timer(&unattended_timer, jiffies + msecs_to_jiffies(PM_UNATTENDED_TIMEOUT));
+	g_resume_status = true;
 	trace_suspend_resume(TPS("resume_console"), state, false);
 
  Close:
@@ -497,12 +520,12 @@ static int enter_state(suspend_state_t state)
 		freeze_begin();
 
 	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
-	printk(KERN_INFO "PM: Syncing filesystems ... ");
+	printk(KERN_INFO "[PM] enter_state: Syncing filesystems ... \n");
 	sys_sync();
-	printk("done.\n");
+	printk("[PM] enter_state: Syncing done.\n");
 	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 
-	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);
+	printk("[PM] enter_state: Preparing system for %s sleep\n", pm_states[state]);
 	error = suspend_prepare(state);
 	if (error)
 		goto Unlock;
@@ -511,13 +534,13 @@ static int enter_state(suspend_state_t state)
 		goto Finish;
 
 	trace_suspend_resume(TPS("suspend_enter"), state, false);
-	pr_debug("PM: Entering %s sleep\n", pm_states[state]);
+	printk("[PM] enter_state: Entering %s sleep\n", pm_states[state]);
 	pm_restrict_gfp_mask();
 	error = suspend_devices_and_enter(state);
 	pm_restore_gfp_mask();
 
  Finish:
-	pr_debug("PM: Finishing wakeup.\n");
+	printk("[PM] enter_state: Finishing wakeup.\n");
 	suspend_finish();
  Unlock:
 	mutex_unlock(&pm_mutex);
@@ -531,7 +554,7 @@ static void pm_suspend_marker(char *annotation)
 
 	getnstimeofday(&ts);
 	time_to_tm(ts.tv_sec, 0, &tm);
-	pr_info("PM: suspend %s %ld-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+	pr_info("[PM] marker: suspend %s %ld-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
 		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 }
@@ -550,15 +573,20 @@ int pm_suspend(suspend_state_t state)
 	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX)
 		return -EINVAL;
 
+	printk("[PM] pm_suspend++\n");
 	pm_suspend_marker("entry");
+	printk("[PM] entering_state: %d\n", state);
 	error = enter_state(state);
 	if (error) {
 		suspend_stats.fail++;
 		dpm_save_failed_errno(error);
+		printk("[PM] pm_suspend failed, cnt: %d\n", suspend_stats.fail);
 	} else {
 		suspend_stats.success++;
+		printk("[PM] pm_suspend success, cnt: %d\n", suspend_stats.success);
 	}
 	pm_suspend_marker("exit");
+	printk("[PM] pm_suspend--\n");
 	return error;
 }
 EXPORT_SYMBOL(pm_suspend);

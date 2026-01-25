@@ -839,7 +839,7 @@ static const struct reg_default wcd9335_defaults[] = {
 	{ WCD9335_RX_PA_AUX_IN_CONN                     , 0x00 },
 	{ WCD9335_RX_TIMER_DIV                          , 0x74 },
 	{ WCD9335_RX_OCP_CTL                            , 0x1f },
-	{ WCD9335_RX_OCP_COUNT                          , 0x77 },
+	{ WCD9335_RX_OCP_COUNT                          , 0xFF },
 	{ WCD9335_RX_BIAS_EAR_DAC                       , 0xa0 },
 	{ WCD9335_RX_BIAS_EAR_AMP                       , 0xaa },
 	{ WCD9335_RX_BIAS_HPH_LDO                       , 0xa9 },

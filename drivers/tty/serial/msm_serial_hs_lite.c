@@ -1689,6 +1689,15 @@ static struct msm_serial_hslite_platform_data
 
 static atomic_t msm_serial_hsl_next_id = ATOMIC_INIT(0);
 
+unsigned uart_info = 0;
+static int __init get_uart_info(char *p)
+{
+        uart_info = 1;
+        return 0;
+}
+early_param("UART", get_uart_info);
+
+
 static int msm_serial_hsl_probe(struct platform_device *pdev)
 {
 	struct msm_hsl_port *msm_hsl_port;
@@ -1699,6 +1708,9 @@ static int msm_serial_hsl_probe(struct platform_device *pdev)
 	const struct of_device_id *match;
 	u32 line;
 	int ret;
+
+        if (uart_info == 0)
+		return 0;
 
 	if (pdev->id == -1)
 		pdev->id = atomic_inc_return(&msm_serial_hsl_next_id) - 1;
@@ -1882,6 +1894,9 @@ static int msm_serial_hsl_suspend(struct device *dev)
 	struct uart_port *port;
 	port = get_port_from_line(get_line(pdev));
 
+        if (uart_info == 0)
+                return 0;
+
 	if (port) {
 
 		if (is_console(port))
@@ -1900,6 +1915,9 @@ static int msm_serial_hsl_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct uart_port *port;
 	port = get_port_from_line(get_line(pdev));
+
+	if (uart_info == 0)
+		return 0;
 
 	if (port) {
 
@@ -1922,6 +1940,11 @@ static int msm_hsl_runtime_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct uart_port *port;
+
+        if (uart_info == 0)
+                return 0;
+
+
 	port = get_port_from_line(get_line(pdev));
 
 	dev_dbg(dev, "pm_runtime: suspending\n");
@@ -1933,6 +1956,10 @@ static int msm_hsl_runtime_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct uart_port *port;
+
+        if (uart_info == 0)
+                return 0;
+
 	port = get_port_from_line(get_line(pdev));
 
 	dev_dbg(dev, "pm_runtime: resuming\n");
@@ -1961,6 +1988,10 @@ static struct platform_driver msm_hsl_platform_driver = {
 static int __init msm_serial_hsl_init(void)
 {
 	int ret;
+
+        if (uart_info == 0)
+                return 0;
+
 
 	ret = uart_register_driver(&msm_hsl_uart_driver);
 	if (unlikely(ret))

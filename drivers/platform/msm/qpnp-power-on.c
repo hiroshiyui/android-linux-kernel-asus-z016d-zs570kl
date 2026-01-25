@@ -29,6 +29,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/qpnp/power-on.h>
+#include <linux/reboot.h>
 
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
@@ -228,7 +229,10 @@ struct qpnp_pon {
 	ktime_t			kpdpwr_last_release_time;
 };
 
+static struct delayed_work kpdpwr_reboot_work;
 static struct qpnp_pon *sys_reset_dev;
+extern int boot_after_60sec;
+extern bool asus_wdt_warm_reset;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);
 
@@ -865,7 +869,27 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 
 	cfg->old_state = !!key_status;
 
+	if (cfg->pon_type == PON_RESIN)
+		pr_info("%s-%d: keypad: volume_down %s\n", __func__, __LINE__,
+			!!key_status ? "Pressed" : "Released");
+
 	return 0;
+}
+
+static struct timer_list kpdpwr_6s_timer;
+void kpdpwr_hold_6s_callback(unsigned long data)
+{
+	schedule_delayed_work(&kpdpwr_reboot_work, 0);
+}
+
+static void kpdpwr_reboot_work_func(struct work_struct *work)
+{
+	pr_info("PON: hold power key for more than 6s. triggered %s reboot...\n", asus_wdt_warm_reset ? "warm" : "cold");
+	ASUSEvtlog("[PWK] PON: hold power key for more than 6s. triggered %s reboot...\n", asus_wdt_warm_reset ? "warm" : "cold");
+	if (asus_wdt_warm_reset)
+		kernel_restart("powerkey");
+	else
+		kernel_restart(NULL);
 }
 
 static irqreturn_t qpnp_kpdpwr_irq(int irq, void *_pon)
@@ -876,6 +900,19 @@ static irqreturn_t qpnp_kpdpwr_irq(int irq, void *_pon)
 	rc = qpnp_pon_input_dispatch(pon, PON_KPDPWR);
 	if (rc)
 		dev_err(&pon->spmi->dev, "Unable to send input event\n");
+
+	if (pon->pon_cfg->old_state) {
+		pr_info("[%s] power button pressed\n", pon->pon_input->name);
+
+		if (boot_after_60sec)
+			mod_timer(&kpdpwr_6s_timer, jiffies + msecs_to_jiffies(6000));
+	}
+	else {
+		pr_info("[%s] power button released\n", pon->pon_input->name);
+
+		if (boot_after_60sec)
+			del_timer(&kpdpwr_6s_timer);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1984,6 +2021,8 @@ static int read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,
 	return 0;
 }
 
+int ASUSEvt_poweroff_reason = -1;
+EXPORT_SYMBOL(ASUSEvt_poweroff_reason);
 static int qpnp_pon_probe(struct spmi_device *spmi)
 {
 	struct qpnp_pon *pon;
@@ -2145,12 +2184,16 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 		dev_info(&pon->spmi->dev,
 				"PMIC@SID%d: Unknown power-off reason\n",
 				pon->spmi->sid);
+		if (pon->spmi->sid == 0)
+			ASUSEvt_poweroff_reason = -1;
 	} else {
 		pon->pon_power_off_reason = index;
 		dev_info(&pon->spmi->dev,
 				"PMIC@SID%d: Power-off reason: %s\n",
 				pon->spmi->sid,
 				qpnp_poff_reason[index]);
+		if (pon->spmi->sid == 0)
+			ASUSEvt_poweroff_reason = index;
 	}
 
 	if (pon->pon_trigger_reason == PON_SMPL ||
@@ -2232,6 +2275,7 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 	dev_set_drvdata(&spmi->dev, pon);
 
 	INIT_DELAYED_WORK(&pon->bark_work, bark_work_func);
+	INIT_DELAYED_WORK(&kpdpwr_reboot_work, kpdpwr_reboot_work_func);
 
 	/* register the PON configurations */
 	rc = qpnp_pon_config_init(pon);
@@ -2351,6 +2395,8 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 					"qcom,store-hard-reset-reason");
 
 	qpnp_pon_debugfs_init(spmi);
+	setup_timer(&kpdpwr_6s_timer, kpdpwr_hold_6s_callback, 0);
+
 	return 0;
 }
 
@@ -2362,6 +2408,7 @@ static int qpnp_pon_remove(struct spmi_device *spmi)
 	device_remove_file(&spmi->dev, &dev_attr_debounce_us);
 
 	cancel_delayed_work_sync(&pon->bark_work);
+	cancel_delayed_work_sync(&kpdpwr_reboot_work);
 
 	if (pon->pon_input)
 		input_unregister_device(pon->pon_input);

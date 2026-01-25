@@ -22,7 +22,12 @@
 #include <linux/qpnp/pwm.h>
 #include <linux/err.h>
 #include <linux/string.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <asm/uaccess.h>
+#include <linux/asusdebug.h>
 
+#include "mdss_fb.h"
 #include "mdss_dsi.h"
 #ifdef TARGET_HW_MDSS_HDMI
 #include "mdss_dba_utils.h"
@@ -30,10 +35,59 @@
 #define DT_CMD_HDR 6
 #define MIN_REFRESH_RATE 48
 #define DEFAULT_MDP_TRANSFER_TIME 14000
-
+#define PANEL_CABC_MASK        0x3
 #define VSYNC_DELAY msecs_to_jiffies(17)
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
+void read_tcon_cabc(int panel_reg, char *rbuf);
+extern struct mdss_panel_data *g_mdss_pdata;
+extern struct msm_fb_data_type *g_mfd;
+static struct dsi_panel_cmds alpm_on_cmd;
+static struct dsi_panel_cmds alpm_off_cmd;
+static struct dsi_panel_cmds alpm_on5_cmd;
+static struct dsi_panel_cmds alpm_change40_cmd;
+static struct dsi_panel_cmds alpm_change5_cmd;
+static struct mutex cmd_mutex;
+extern char lcd_unique_id[64];
+static char cabc_mode[2] = {0x55, 0x00};
+static char alpm_mode[2] = {0x53, 0x00};
+static char hbm_mode[2] = {0x53, 0x20};
+static char led_pwm1[2] = {0x51, 0x0};
+static char read_cabc_mode[1] = {0x56};
+static char read_hbm_mode[1] = {0x54};
+static int balance_mode =1;
+static struct proc_dir_entry *cabc_mode_switch;
+static struct proc_dir_entry *alpm_mode_switch;
+static struct proc_dir_entry *hbm_mode_switch;
+static struct proc_dir_entry *lcd_uniqueID_proc_file;
+extern struct fb_info *g_fb_info;
+
+extern int8_t is_recovery;
+extern char* androidboot_mode;
+
+extern int dsi_power_state;
+enum {
+       CABC = 0,
+       ALPM,
+       HBM,
+};
+
+static struct dsi_cmd_desc tcon_cabc_cmd[] = {
+    { {DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(cabc_mode)}, cabc_mode},
+};
+static struct dsi_cmd_desc read_cabc_cmd[] = {
+               {{DTYPE_GEN_READ1,1,0,0,0,1},read_cabc_mode},
+};
+static struct dsi_cmd_desc tcon_hbm_cmd[] = {
+    { {DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(hbm_mode)}, hbm_mode},
+};
+static struct dsi_cmd_desc read_hbm_cmd[] = {
+               {{DTYPE_GEN_READ1,1,0,0,0,1},read_hbm_mode},
+};
+static struct dsi_cmd_desc backlight_cmd = {
+       {DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(led_pwm1)},
+       led_pwm1
+};
 
 void mdss_dsi_panel_pwm_cfg(struct mdss_dsi_ctrl_pdata *ctrl)
 {
@@ -209,11 +263,315 @@ static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 }
 
-static char led_pwm1[2] = {0x51, 0x0};	/* DTYPE_DCS_WRITE1 */
-static struct dsi_cmd_desc backlight_cmd = {
-	{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(led_pwm1)},
-	led_pwm1
+
+void read_tcon_cabc(int panel_reg, char *rbuf)
+{
+    struct dcs_cmd_req cmdreq;
+    struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	ctrl_pdata = container_of(g_mdss_pdata, struct mdss_dsi_ctrl_pdata,
+                panel_data);
+
+	switch (panel_reg){
+		case HBM:
+		case ALPM:
+			if (dsi_power_state == 0) {
+				printk(KERN_EMERG "[DISP]DSI is off, Skip node writing, reg:%d\n",panel_reg);
+				break;
+			}
+		    mutex_lock(&cmd_mutex);
+		    memset(&cmdreq, 0, sizeof(cmdreq));
+			cmdreq.cmds = read_hbm_cmd;
+			cmdreq.cmds_cnt = 1;
+		    cmdreq.flags = CMD_REQ_RX | CMD_REQ_COMMIT;
+		    cmdreq.rlen = 1;
+			cmdreq.rbuf = rbuf;
+		    cmdreq.cb = NULL;
+		    mdss_dsi_cmdlist_put(ctrl_pdata, &cmdreq);
+		    mutex_unlock(&cmd_mutex);
+			break;
+		case CABC:
+		    mutex_lock(&cmd_mutex);
+		    memset(&cmdreq, 0, sizeof(cmdreq));
+			cmdreq.cmds = read_cabc_cmd;
+			cmdreq.cmds_cnt = 1;
+		    cmdreq.flags = CMD_REQ_RX | CMD_REQ_COMMIT;
+		    cmdreq.rlen = 1;
+			cmdreq.rbuf = rbuf;
+		    cmdreq.cb = NULL;
+		    mdss_dsi_cmdlist_put(ctrl_pdata, &cmdreq);
+		    mutex_unlock(&cmd_mutex);
+			break;
+		default:;
+	}
+}
+EXPORT_SYMBOL(read_tcon_cabc);
+
+int set_tcon_cabc(int panel_reg, char mode)
+{
+    struct dcs_cmd_req cmdreq;
+    struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int ret = 0;
+    ctrl_pdata = container_of(g_mdss_pdata, struct mdss_dsi_ctrl_pdata,
+                panel_data);
+
+	switch (panel_reg){
+		case CABC:
+		    mutex_lock(&cmd_mutex);
+			cabc_mode[1] = mode;
+			cabc_mode[1] &= ~PANEL_CABC_MASK;
+			cabc_mode[1] |= (mode & PANEL_CABC_MASK);
+		    if (g_mdss_pdata->panel_info.panel_power_state == MDSS_PANEL_POWER_ON) {
+		        printk("write cabc mode = 0x%x\n", cabc_mode[1]);
+		        memset(&cmdreq, 0, sizeof(cmdreq));
+		        cmdreq.cmds = tcon_cabc_cmd;
+		        cmdreq.cmds_cnt = ARRAY_SIZE(tcon_cabc_cmd);
+		        cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL;
+		        cmdreq.rlen = 0;
+		        cmdreq.cb = NULL;
+		        mdss_dsi_cmdlist_put(ctrl_pdata, &cmdreq);
+				ret = 0;
+		    } else {
+		        printk("CABC Set Fail: mode=%d\n", mode);
+				ret = 1;
+		    }
+			mutex_unlock(&cmd_mutex);
+			break;
+		case ALPM:
+			mutex_lock(&g_mfd->update.lock);
+			if (mode == 4)
+				mdss_dsi_panel_cmds_send(ctrl_pdata, &alpm_change5_cmd, CMD_REQ_COMMIT);
+			if (mode == 3)
+				mdss_dsi_panel_cmds_send(ctrl_pdata, &alpm_change40_cmd, CMD_REQ_COMMIT);
+			if (mode == 2)
+				mdss_dsi_panel_cmds_send(ctrl_pdata, &alpm_on5_cmd, CMD_REQ_COMMIT);
+			if (mode == 1)
+			    mdss_dsi_panel_cmds_send(ctrl_pdata, &alpm_on_cmd, CMD_REQ_COMMIT);
+			if (mode == 0)
+			    mdss_dsi_panel_cmds_send(ctrl_pdata, &alpm_off_cmd, CMD_REQ_COMMIT);
+			mutex_unlock(&g_mfd->update.lock);
+			break;
+		case HBM:
+			if (dsi_power_state == 0) {
+				printk(KERN_EMERG "[DISP]DSI is off, Skip node writing, reg:%d\n",panel_reg);
+				ret = 0;
+				break;
+			}
+		    mutex_lock(&cmd_mutex);
+		    mutex_lock(&g_mfd->update.lock);
+			hbm_mode[1] = mode;
+		    if (g_mdss_pdata->panel_info.panel_power_state == MDSS_PANEL_POWER_ON) {
+		        printk("Write hbm mode = 0x%x\n", hbm_mode[1]);
+		        memset(&cmdreq, 0, sizeof(cmdreq));
+		        cmdreq.cmds = tcon_hbm_cmd;
+		        cmdreq.cmds_cnt = ARRAY_SIZE(tcon_hbm_cmd);
+		        cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL;
+		        cmdreq.rlen = 0;
+		        cmdreq.cb = NULL;
+		        mdss_dsi_cmdlist_put(ctrl_pdata, &cmdreq);
+				ret = 0;
+		    } else {
+		        printk("HBM Set Fail: mode=%d\n", mode);
+				ret = 1;
+		    }
+			mutex_unlock(&g_mfd->update.lock);
+			mutex_unlock(&cmd_mutex);
+			break;
+		default:;
+		}
+	return ret;
+}
+EXPORT_SYMBOL(set_tcon_cabc);
+static ssize_t cabc_mode_switch_proc_write(struct file *file, const const char __user *buff, size_t count,loff_t *ops)
+{
+	char temp;
+	if(count > 0)
+	{
+		if(get_user(temp,buff))
+			return -EFAULT;
+		if(temp > '3' || temp < '0'){
+			printk("[DISPLAY] : The error number\n");
+			return -1;
+		} else {
+			cabc_mode[1] = temp - 0x30;
+		}
+	}
+	printk("[DISPLAY] : The Current CABC Mode is %x\n",cabc_mode[1]);
+	set_tcon_cabc(CABC, cabc_mode[1]);
+	if( temp-0x30 == 0x03)
+		balance_mode=1;
+	else
+		balance_mode=0;
+	return count;
+}
+
+static ssize_t alpm_mode_proc_write(struct file *file, const const char __user *buff, size_t count,loff_t *ops)
+{
+	char temp;
+	if(count > 0)
+	{
+		if(get_user(temp,buff))
+			return -EFAULT;
+		if(temp > '9' || temp < '0'){
+			printk("[DISPLAY] : The error number\n");
+			return -1;
+		} else {
+			alpm_mode[1] = temp - 0x30;
+		}
+	}
+	printk("[DISPLAY] : The Current ALPM Mode is %x\n",alpm_mode[1]);
+	set_tcon_cabc(ALPM, alpm_mode[1]);
+
+	return count;
+}
+
+static ssize_t hbm_mode_proc_write(struct file *file, const const char __user *buff, size_t count,loff_t *ops)
+{
+	char temp;
+	if(count > 0)
+	{
+		if(get_user(temp,buff))
+			return -EFAULT;
+		if(temp > '3' || temp < '0'){
+			printk("[DISPLAY] : The error number\n");
+			return -1;
+		} else {
+			if(temp == '0')
+				hbm_mode[1] &= 0x3F;
+			else
+				hbm_mode[1] |= 0xC0;
+		}
+	}
+	printk("[DISPLAY] : The Current HBM Mode is %x\n",hbm_mode[1]);
+	set_tcon_cabc(HBM, hbm_mode[1]);
+
+	return count;
+}
+
+static int cabc_mode_switch_proc_read(struct seq_file *buf, void *v)
+{
+	char temp[2] = {0};
+	read_tcon_cabc(CABC, &temp[0]);
+	temp[0] = temp[0] & 0x03;
+	temp[0] = temp[0] + 0x30;
+	seq_printf(buf, "%s\n", temp);
+	return 0;
+}
+static int alpm_mode_proc_read(struct seq_file *buf, void *v)
+{
+	seq_printf(buf, "0x%x\n", alpm_mode[1]);
+	return 0;
+}
+static int hbm_mode_proc_read(struct seq_file *buf, void *v)
+{
+	char temp[2] = {0};
+	read_tcon_cabc(HBM, &temp[0]);
+
+	if (temp[0] == 0x20) {
+		printk("%s: HBM off\n", __func__);
+		seq_puts(buf, "0\n");
+	} else if (temp[0] == 0xe0) {
+		printk("%s: HBM on\n", __func__);
+		seq_puts(buf, "1\n");
+	} else if (temp[0] == 0x22) {
+		printk("%s: in always on mode\n", __func__);
+		seq_puts(buf, "2\n");
+	} else {
+		printk("%s: unknown parameter\n", __func__);
+		seq_puts(buf, "0\n");
+	}
+	return 0;
+
+}
+
+static int lcd_uniqueID_proc_read(struct seq_file *buf, void *v)
+{
+	seq_printf(buf, "%s\n", lcd_unique_id);
+	return 0;
+}
+
+static int cabc_mode_switch_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file,cabc_mode_switch_proc_read,NULL);
+}
+static int alpm_mode_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file,alpm_mode_proc_read,NULL);
+}
+static int hbm_mode_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file,hbm_mode_proc_read,NULL);
+}
+static int lcd_uniqueID_proc_open(struct inode *inode, struct  file *file)
+{
+    return single_open(file, lcd_uniqueID_proc_read, NULL);
+}
+
+static struct file_operations cabc_mode_switch_proc_ops = {
+	.open = cabc_mode_switch_proc_open,
+	.read = seq_read,
+	.write = cabc_mode_switch_proc_write,
+	.release = single_release,
 };
+static struct file_operations alpm_mode_proc_ops = {
+	.open = alpm_mode_proc_open,
+	.read = seq_read,
+	.write = alpm_mode_proc_write,
+	.release = single_release,
+};
+static struct file_operations hbm_mode_proc_ops = {
+	.open = hbm_mode_proc_open,
+	.read = seq_read,
+	.write = hbm_mode_proc_write,
+	.release = single_release,
+};
+static struct file_operations lcd_uniqueID_proc_ops = {
+	.open = lcd_uniqueID_proc_open,
+	.read = seq_read,
+};
+
+static void create_cabc_mode_switch_file(void)
+{	char name[] = "cabc_mode_switch";
+	printk("[DISPLAY] : create_cabc_mode_switch_file\n");
+	cabc_mode_switch = proc_create(name,0666,NULL,&cabc_mode_switch_proc_ops);
+	if(cabc_mode_switch){
+        printk("[DISPLAY] : create_cabc_mode_switch_file sucessed!\n");
+    }else{
+		printk("[DISPLAY] : create create_cabc_mode_switch_file failed!\n");
+    }
+}
+
+static void create_alpm_mode_file(void)
+{	char name[] = "alpm_mode";
+	printk("[DISPLAY] : create alpm_mode file\n");
+	alpm_mode_switch = proc_create(name,0666,NULL,&alpm_mode_proc_ops);
+	if(alpm_mode_switch){
+        printk("[DISPLAY] : create_alpm_mode_file sucessed!\n");
+    }else{
+		printk("[DISPLAY] : create create_alpm_mode_file failed!\n");
+    }
+}
+
+static void create_hbm_mode_file(void)
+{	char name[] = "hbm_mode";
+	printk("[DISPLAY] : create hbm_mode file\n");
+	hbm_mode_switch = proc_create(name,0666,NULL,&hbm_mode_proc_ops);
+	if(hbm_mode_switch){
+        printk("[DISPLAY] : create_hbm_mode_file sucessed!\n");
+    }else{
+		printk("[DISPLAY] : create create_hbm_mode_file failed!\n");
+    }
+}
+
+static void create_lcd_uniqueID_proc_file(void)
+{
+    printk("create_lcd_uniqueID_proc_file\n");
+    lcd_uniqueID_proc_file = proc_create("lcd_unique_id", 0444,NULL, &lcd_uniqueID_proc_ops);
+    if(lcd_uniqueID_proc_file){
+        printk("create lcd_uniqueID_proc_file sucessed!\n");
+    }else{
+		printk("create lcd_uniqueID_proc_file failed!\n");
+    }
+}
 
 static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 {
@@ -226,8 +584,8 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 			return;
 	}
 
-	pr_debug("%s: level=%d\n", __func__, level);
-
+	printk(KERN_DEBUG "[DISP]%s level=%d\n",__func__,level);
+        ASUSEvtlog("[BKL] level:%d\n",level/64);
 	led_pwm1[1] = (unsigned char)level;
 
 	memset(&cmdreq, 0, sizeof(cmdreq));
@@ -344,7 +702,7 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	struct mdss_panel_info *pinfo = NULL;
 	int i, rc = 0;
-
+	printk(KERN_DEBUG "[DISP]%s\n",__func__);
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -855,7 +1213,7 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 	struct mdss_panel_info *pinfo;
 	struct dsi_panel_cmds *on_cmds;
 	int ret = 0;
-
+	printk(KERN_DEBUG "[DISP]%s\n",__func__);
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -880,9 +1238,10 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	pr_debug("%s: ndx=%d cmd_cnt=%d\n", __func__,
 				ctrl->ndx, on_cmds->cmd_cnt);
-
+        printk(KERN_DEBUG"[DISP]%s: send initial commands +++++\n",__func__);
 	if (on_cmds->cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+        printk(KERN_DEBUG"[DISP]%s: send initial commands -----\n",__func__);
 
 	if (pinfo->compression_mode == COMPRESSION_DSC)
 		mdss_dsi_panel_dsc_pps_send(ctrl, pinfo);
@@ -971,7 +1330,7 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
 	struct mdss_panel_info *pinfo;
-
+	printk(KERN_DEBUG "[DISP]%s\n",__func__);
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -2649,6 +3008,12 @@ static int mdss_panel_parse_dt(struct device_node *np,
 			pinfo->panel_orientation = MDP_FLIP_UD;
 	}
 
+	// rotate 180 degree in recovery and charger mode
+	if (is_recovery || strcmp(androidboot_mode, "charger") == 0) {
+		if (data)
+			pinfo->panel_orientation = MDP_ROT_180;
+	}
+
 	rc = of_property_read_u32(np, "qcom,mdss-brightness-max-level", &tmp);
 	pinfo->brightness_max = (!rc ? tmp : MDSS_MAX_BL_BRIGHTNESS);
 	rc = of_property_read_u32(np, "qcom,mdss-dsi-bl-min-level", &tmp);
@@ -2796,6 +3161,17 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->off_cmds,
 		"qcom,mdss-dsi-off-command", "qcom,mdss-dsi-off-command-state");
 
+       mdss_dsi_parse_dcs_cmds(np, &alpm_on_cmd,
+               "qcom,mdss-dsi-alpm-on-command", "qcom,mdss-dsi-on-command-state");
+       mdss_dsi_parse_dcs_cmds(np, &alpm_off_cmd,
+               "qcom,mdss-dsi-alpm-off-command", "qcom,mdss-dsi-on-command-state");
+       mdss_dsi_parse_dcs_cmds(np, &alpm_on5_cmd,
+               "qcom,mdss-dsi-alpm-on5-command", "qcom,mdss-dsi-on-command-state");
+       mdss_dsi_parse_dcs_cmds(np, &alpm_change40_cmd,
+               "qcom,mdss-dsi-alpm-change40-command", "qcom,mdss-dsi-on-command-state");
+       mdss_dsi_parse_dcs_cmds(np, &alpm_change5_cmd,
+               "qcom,mdss-dsi-alpm-change5-command", "qcom,mdss-dsi-on-command-state");
+
 	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->idle_on_cmds,
 		"qcom,mdss-dsi-idle-on-command",
 		"qcom,mdss-dsi-idle-on-command-state");
@@ -2846,6 +3222,11 @@ int mdss_dsi_panel_init(struct device_node *node,
 		return -ENODEV;
 	}
 
+	create_cabc_mode_switch_file();
+	create_alpm_mode_file();
+	create_hbm_mode_file();
+	create_lcd_uniqueID_proc_file();
+	mutex_init(&cmd_mutex);
 	pinfo = &ctrl_pdata->panel_data.panel_info;
 
 	pr_debug("%s:%d\n", __func__, __LINE__);

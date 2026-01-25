@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2010, 2013-2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2009-2010, 2013-2015 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,17 +27,18 @@
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
 #include <net/cnss.h>
+#include <linux/platform_data/msm_serial_hs.h>
 
 #define BT_PWR_DBG(fmt, arg...)  pr_debug("%s: " fmt "\n" , __func__ , ## arg)
 #define BT_PWR_INFO(fmt, arg...) pr_info("%s: " fmt "\n" , __func__ , ## arg)
 #define BT_PWR_ERR(fmt, arg...)  pr_err("%s: " fmt "\n" , __func__ , ## arg)
 
+#define UART_CLOCK_ENABLE 1
+#define UART_CLOCK_DISABLE 0
+#define HS_UART_0 0
 
 static struct of_device_id bt_power_match_table[] = {
-	{	.compatible = "qca,ar3002" },
-	{	.compatible = "qca,qca6174" },
-	{	.compatible = "qca,qca9379" },
-	{	.compatible = "qca,wcn3990" },
+	{	.compatible = "bcm,bcm4358" },
 	{}
 };
 
@@ -87,16 +88,6 @@ static int bt_vreg_enable(struct bt_power_vreg_data *vreg)
 			}
 		}
 
-		if (vreg->load_uA >= 0) {
-			rc = regulator_set_optimum_mode(vreg->reg,
-					vreg->load_uA);
-			if (rc < 0) {
-				BT_PWR_ERR("vreg_set_mode(%s) failed rc=%d\n",
-						vreg->name, rc);
-				goto out;
-			}
-		}
-
 		rc = regulator_enable(vreg->reg);
 		if (rc < 0) {
 			BT_PWR_ERR("regulator_enable(%s) failed. rc=%d\n",
@@ -129,19 +120,14 @@ static int bt_vreg_disable(struct bt_power_vreg_data *vreg)
 
 		if (vreg->set_voltage_sup) {
 			/* Set the min voltage to 0 */
-			rc = regulator_set_voltage(vreg->reg, 0,
-					vreg->high_vol_level);
+			rc = regulator_set_voltage(vreg->reg,
+						0,
+						vreg->high_vol_level);
 			if (rc < 0) {
 				BT_PWR_ERR("vreg_set_vol(%s) failed rc=%d\n",
 						vreg->name, rc);
 				goto out;
-			}
-		}
-		if (vreg->load_uA >= 0) {
-			rc = regulator_set_optimum_mode(vreg->reg, 0);
-			if (rc < 0) {
-				BT_PWR_ERR("vreg_set_mode(%s) failed rc=%d\n",
-						vreg->name, rc);
+
 			}
 		}
 	}
@@ -171,7 +157,7 @@ static int bt_configure_gpios(int on)
 	int rc = 0;
 	int bt_reset_gpio = bt_power_pdata->bt_gpio_sys_rst;
 
-	BT_PWR_DBG("bt_gpio= %d on: %d", bt_reset_gpio, on);
+	BT_PWR_DBG("%s  bt_gpio= %d on: %d", __func__, bt_reset_gpio, on);
 
 	if (on) {
 		rc = gpio_request(bt_reset_gpio, "bt_sys_rst_n");
@@ -207,46 +193,12 @@ static int bluetooth_power(int on)
 	BT_PWR_DBG("on: %d", on);
 
 	if (on) {
+		BT_PWR_DBG("uart power on");
 		if (bt_power_pdata->bt_vdd_io) {
 			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_io);
 			if (rc < 0) {
 				BT_PWR_ERR("bt_power vddio config failed");
 				goto out;
-			}
-		}
-		if (bt_power_pdata->bt_vdd_xtal) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_xtal);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power vddxtal config failed");
-				goto vdd_xtal_fail;
-			}
-		}
-		if (bt_power_pdata->bt_vdd_core) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_core);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power vddcore config failed");
-				goto vdd_core_fail;
-			}
-		}
-		if (bt_power_pdata->bt_vdd_pa) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_pa);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power vddpa config failed");
-				goto vdd_pa_fail;
-			}
-		}
-		if (bt_power_pdata->bt_vdd_ldo) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_ldo);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power vddldo config failed");
-				goto vdd_ldo_fail;
-			}
-		}
-		if (bt_power_pdata->bt_chip_pwd) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_chip_pwd);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power chippwd config failed");
-				goto chip_pwd_fail;
 			}
 		}
 		if (bt_power_pdata->bt_gpio_sys_rst) {
@@ -261,18 +213,8 @@ static int bluetooth_power(int on)
 gpio_fail:
 		if (bt_power_pdata->bt_gpio_sys_rst)
 			gpio_free(bt_power_pdata->bt_gpio_sys_rst);
-		bt_vreg_disable(bt_power_pdata->bt_chip_pwd);
-chip_pwd_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_ldo);
-vdd_ldo_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_pa);
-vdd_pa_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_core);
-vdd_core_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_xtal);
-vdd_xtal_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_io);
-	}
+			bt_vreg_disable(bt_power_pdata->bt_vdd_io);
+		}
 out:
 	return rc;
 }
@@ -296,7 +238,7 @@ static const struct rfkill_ops bluetooth_power_rfkill_ops = {
 	.set_block = bluetooth_toggle_radio,
 };
 
-#if defined(CONFIG_CNSS) && defined(CONFIG_CLD_LL_CORE)
+#ifdef CONFIG_CNSS
 static ssize_t enable_extldo(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
@@ -394,7 +336,6 @@ static int bt_dt_parse_vreg_info(struct device *dev,
 
 		vreg->name = vreg_name;
 
-		/* Parse voltage-level from each node */
 		snprintf(prop_name, MAX_PROP_SIZE,
 				"%s-voltage-level", vreg_name);
 		prop = of_get_property(np, prop_name, &len);
@@ -406,21 +347,10 @@ static int bt_dt_parse_vreg_info(struct device *dev,
 			vreg->high_vol_level = be32_to_cpup(&prop[1]);
 		}
 
-		/* Parse current-level from each node */
-		snprintf(prop_name, MAX_PROP_SIZE,
-				"%s-current-level", vreg_name);
-		ret = of_property_read_u32(np, prop_name, &vreg->load_uA);
-		if (ret < 0) {
-			BT_PWR_DBG("%s property is not valid\n", prop_name);
-			vreg->load_uA = -1;
-			ret = 0;
-		}
-
 		*vreg_data = vreg;
-		BT_PWR_DBG("%s: vol=[%d %d]uV, current=[%d]uA\n",
+		BT_PWR_DBG("%s: vol=[%d %d]uV\n",
 			vreg->name, vreg->low_vol_level,
-			vreg->high_vol_level,
-			vreg->load_uA);
+			vreg->high_vol_level);
 	} else
 		BT_PWR_INFO("%s: is not provided in device tree", vreg_name);
 
@@ -440,44 +370,15 @@ static int bt_power_populate_dt_pinfo(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		bt_power_pdata->bt_gpio_sys_rst =
 			of_get_named_gpio(pdev->dev.of_node,
-						"qca,bt-reset-gpio", 0);
+						"bcm,bt-reset-gpio", 0);
 		if (bt_power_pdata->bt_gpio_sys_rst < 0) {
 			BT_PWR_ERR("bt-reset-gpio not provided in device tree");
 			return bt_power_pdata->bt_gpio_sys_rst;
 		}
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_vdd_core,
-					"qca,bt-vdd-core");
-		if (rc < 0)
-			return rc;
 
 		rc = bt_dt_parse_vreg_info(&pdev->dev,
 					&bt_power_pdata->bt_vdd_io,
-					"qca,bt-vdd-io");
-		if (rc < 0)
-			return rc;
-
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_vdd_xtal,
-					"qca,bt-vdd-xtal");
-		if (rc < 0)
-			return rc;
-
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_vdd_pa,
-					"qca,bt-vdd-pa");
-		if (rc < 0)
-			return rc;
-
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_vdd_ldo,
-					"qca,bt-vdd-ldo");
-		if (rc < 0)
-			return rc;
-
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_chip_pwd,
-					"qca,bt-chip-pwd");
+					"bcm,bt-vdd-io");
 		if (rc < 0)
 			return rc;
 
@@ -564,7 +465,12 @@ static struct platform_driver bt_power_driver = {
 static int __init bluetooth_power_init(void)
 {
 	int ret;
+	extern char* androidboot_mode;
 
+	if (strcmp(androidboot_mode,"charger")==0) {
+		printk("[Power] %s: skip this driver in charger mode\n", __func__);
+		return 0;
+	}
 	ret = platform_driver_register(&bt_power_driver);
 	return ret;
 }

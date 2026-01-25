@@ -5,7 +5,7 @@
  *
  * Copyright (C) 2012 Alexandra Chin <alexandra.chin@tw.synaptics.com>
  * Copyright (C) 2012 Scott Lin <scott.lin@tw.synaptics.com>
- * Copyright (C) 2016 The Linux Foundation. All rights reserved.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -37,22 +37,17 @@
 #define SYNAPTICS_DS4 (1 << 0)
 #define SYNAPTICS_DS5 (1 << 1)
 #define SYNAPTICS_DSX_DRIVER_PRODUCT (SYNAPTICS_DS4 | SYNAPTICS_DS5)
-#define SYNAPTICS_DSX_DRIVER_VERSION 0x2061
+#define SYNAPTICS_DSX_DRIVER_VERSION 0x2060
 
 #include <linux/version.h>
+#include <linux/debugfs.h>
+#include <linux/switch.h>
 #ifdef CONFIG_FB
 #include <linux/notifier.h>
 #include <linux/fb.h>
 #endif
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #include <linux/earlysuspend.h>
-#endif
-
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-#include <linux/completion.h>
-#include <linux/atomic.h>
-#include <linux/pm_runtime.h>
-#include <linux/clk.h>
 #endif
 
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 38))
@@ -122,9 +117,97 @@
 #define MASK_2BIT 0x03
 #define MASK_1BIT 0x01
 
+//<ASUS_cap_sensor+>
+#define CAP_I2C_ADDR 0x44
+#define CAP_INT_PIN 40
+#define CAP_INT_GET_PIN(x) (gpio_to_irq(x))
+#define CAP_INT_PIN_NAME	"cap-sensor"
+//<ASUS_cap_sensor->
+
+//<ASUS_focal+>
+#define FTS_DBG_EN 1
+#if FTS_DBG_EN
+#define FTS_DBG(fmt, args...) 				printk("[FTS]" fmt, ## args)
+#else
+#define FTS_DBG(fmt, args...) 				do{}while(0)
+#endif
+
+#define SELFTEST_ITEM_NUM 4
+#define FTS_CAP_I2C_ADDR 0x38
+//#define FTS_CAP_INT_PIN 40
+#define FTS_CAP_INT_PIN_NAME	"fts-sensor"
+#define FTS_WORKQUEUE_NAME	"fts_wq"
+
+#define KEY_BACK_X_AREA 80
+#define KEY_BACK_Y_AREA 900
+
+#define KEY_HOME_X_AREA 240
+#define KEY_HOME_Y_AREA 900
+
+#define KEY_MENU_X_AREA 400
+#define KEY_MENU_Y_AREA 900
+
+#define FTS_MAX_ID		0x0F
+#define FTS_TOUCH_X_H_POS	3
+#define FTS_TOUCH_X_L_POS	4
+#define FTS_TOUCH_Y_H_POS	5
+#define FTS_TOUCH_Y_L_POS	6
+#define FTS_TOUCH_EVENT_POS	3
+#define FTS_TOUCH_ID_POS		5
+#define FTS_MAX_POINTS      2
+#define FTS_TOUCH_POINT_NUM 2
+#define FTS_META_REGS		3
+#define FTS_ONE_TCH_LEN		6
+#define POINT_READ_BUF	(3 + FTS_ONE_TCH_LEN * FTS_MAX_POINTS)
+#define FTS_TOUCH_DOWN		0
+#define FTS_TOUCH_UP		1
+#define FTS_TOUCH_CONTACT	2
+
+#define FTS_CHIP_ID 0x67
+#define FTS_DELAY_TIME_AA	10
+#define FTS_DELAY_TIME_55	10
+#define FTS_UPGRADE_ID_1	0x79
+#define FTS_UPGRADE_ID_2	0x1C
+#define FTS_READ_ID_TIME	10
+#define FTS_DELAY_ERASE_FLASH_TIME	2000
+	
+#define FTS_RST_CMD_REG2		0xBC
+#define FTS_UPGRADE_AA		0xAA
+#define FTS_UPGRADE_55		0x55
+#define FTS_READ_ID_REG		0x90
+#define FTS_ERASE_APP_REG	0x61
+#define FTS_FW_WRITE_CMD		0xBF
+#define FTS_REG_ECC		0xCC
+
+#define FTS_UPGRADE_LOOP		30
+#define FTS_PACKET_LENGTH      	32
+
+#define FTS_REG_ID		0x9F
+#define FTS_REG_FW_VER		0xA6
+
+/*create apk debug channel*/
+#define PROC_UPGRADE			0
+#define PROC_READ_REGISTER		1
+#define PROC_WRITE_REGISTER	2
+#define PROC_AUTOCLB			4
+#define PROC_UPGRADE_INFO		5
+#define PROC_WRITE_DATA		6
+#define PROC_READ_DATA			7
+#define PROC_SET_TEST_FLAG				8
+#define PROC_NAME	"ftxxxx-debug"
+
+#define WRITE_BUF_SIZE		512
+#define READ_BUF_SIZE		512
+
+static DEFINE_MUTEX(i2c_rw_access);
+//<ASUS_focal->
+
 #define PINCTRL_STATE_ACTIVE    "pmx_ts_active"
 #define PINCTRL_STATE_SUSPEND   "pmx_ts_suspend"
 #define PINCTRL_STATE_RELEASE   "pmx_ts_release"
+
+#define SYNA_FW_NAME_MAX_LEN	50
+
 enum exp_fn {
 	RMI_DEV = 0,
 	RMI_FW_UPDATER,
@@ -312,29 +395,58 @@ struct synaptics_rmi4_device_info {
  * @report_pressure: flag to indicate reporting of pressure data
  * @stylus_enable: flag to indicate reporting of stylus data
  * @eraser_enable: flag to indicate reporting of eraser data
- * @external_afe_buttons: flag to indicate presence of external AFE buttons
  * @reset_device: pointer to device reset function
  * @irq_enable: pointer to interrupt enable function
  * @sleep_enable: pointer to sleep enable function
- * @report_touch: pointer to touch reporting function
  */
 struct synaptics_rmi4_data {
 	struct platform_device *pdev;
 	struct input_dev *input_dev;
 	struct input_dev *stylus_dev;
 	const struct synaptics_dsx_hw_interface *hw_if;
+	struct switch_dev touch_sdev;
+	struct dentry *dir;
 	struct synaptics_rmi4_device_info rmi4_mod_info;
 	struct kobject *board_prop_dir;
 	struct regulator *pwr_reg;
 	struct regulator *bus_reg;
+	struct regulator *regulator_vdd;
+	struct regulator *regulator_avdd;
 	struct mutex rmi4_reset_mutex;
 	struct mutex rmi4_report_mutex;
 	struct mutex rmi4_io_ctrl_mutex;
 	struct mutex rmi4_exp_init_mutex;
+	struct mutex cap_mutex;
+	struct mutex rmi4_fw_mutex;
 	struct delayed_work rb_work;
 	struct workqueue_struct *rb_workqueue;
+	struct pinctrl *ts_pinctrl;
+	struct pinctrl_state *pinctrl_state_active;
+	struct pinctrl_state *pinctrl_state_suspend;
+	struct pinctrl_state *pinctrl_state_release;
+    //<ASUS_focal+>
+    struct workqueue_struct *fts_workqueue;
+    struct work_struct 	fts_touch_event_work;	
+    struct workqueue_struct *fts_glove_wq;
+	struct delayed_work fts_glove_delay_work;
+    //<ASUS_focal->
+	//<ASUS_cap_sensor+>
+	struct workqueue_struct *cap_wq;
+	struct work_struct cap_work;
+	/*struct workqueue_struct *cap_cal_wq;
+	struct delayed_work calibration_work;*/
+	//<ASUS_cap_sensor->
+	//<ASUS_led+>
+	#ifdef ASUS_FACTORY_BUILD
+	struct workqueue_struct *led_wq;
+	struct delayed_work led_delay_work;
+	#endif
+	//<ASUS_led->
+	//<ASUS_usb_cable_status+>
+	struct workqueue_struct *usb_wq;
+	struct work_struct usb_detect_work;
+	//<ASUS_usb_cable_status->
 #ifdef CONFIG_FB
-	struct work_struct fb_notify_work;
 	struct notifier_block fb_notifier;
 	struct work_struct reset_work;
 	struct workqueue_struct *reset_workqueue;
@@ -342,6 +454,7 @@ struct synaptics_rmi4_data {
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend early_suspend;
 #endif
+    unsigned char cap_fw_id;    //<ASUS_focal+> <ASUS_cap_sensor+>
 	unsigned char current_page;
 	unsigned char button_0d_enabled;
 	unsigned char num_of_tx;
@@ -358,10 +471,25 @@ struct synaptics_rmi4_data {
 	unsigned short f01_cmd_base_addr;
 	unsigned short f01_ctrl_base_addr;
 	unsigned short f01_data_base_addr;
+	//<ASUS_Glove+>
+	unsigned short f12_ctrl23_base_addr;
+	unsigned short f12_ctrl10_base_addr;
+	//<ASUS_Glove->
+	//<ASUS_COVER+>
+	unsigned short f12_ctrl15_base_addr;
+	//<ASUS_COVER->
+	//<ASUS_DTP+>
+	unsigned short f12_ctrl18_base_addr;
+	//<ASUS_DTP->
 	unsigned int firmware_id;
+	unsigned int config_id;
+	char fw_name[SYNA_FW_NAME_MAX_LEN];
 	int irq;
 	int sensor_max_x;
 	int sensor_max_y;
+	//<ASUS_usb_cable_status+>
+	bool usb_status;
+	//<ASUS_usb_cable_status->
 	bool flash_prog_mode;
 	bool irq_enabled;
 	bool fingers_on_2d;
@@ -372,32 +500,17 @@ struct synaptics_rmi4_data {
 	bool f11_wakeup_gesture;
 	bool f12_wakeup_gesture;
 	bool enable_wakeup_gesture;
+	bool touch_stopped;
 	bool wedge_sensor;
 	bool report_pressure;
 	bool stylus_enable;
 	bool eraser_enable;
-	bool external_afe_buttons;
 	int (*reset_device)(struct synaptics_rmi4_data *rmi4_data,
 			bool rebuild);
 	int (*irq_enable)(struct synaptics_rmi4_data *rmi4_data, bool enable,
 			bool attn_only);
 	void (*sleep_enable)(struct synaptics_rmi4_data *rmi4_data,
 			bool enable);
-	void (*report_touch)(struct synaptics_rmi4_data *rmi4_data,
-			struct synaptics_rmi4_fn *fhandler);
-	struct pinctrl *ts_pinctrl;
-	struct pinctrl_state *pinctrl_state_active;
-	struct pinctrl_state *pinctrl_state_suspend;
-	struct pinctrl_state *pinctrl_state_release;
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-	atomic_t st_enabled;
-	atomic_t st_pending_irqs;
-	struct completion st_powerdown;
-	struct completion st_irq_processed;
-	bool st_initialized;
-	struct clk *core_clk;
-	struct clk *iface_clk;
-#endif
 };
 
 struct synaptics_dsx_bus_access {
@@ -406,10 +519,6 @@ struct synaptics_dsx_bus_access {
 		unsigned char *data, unsigned short length);
 	int (*write)(struct synaptics_rmi4_data *rmi4_data, unsigned short addr,
 		unsigned char *data, unsigned short length);
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-	int (*get)(struct synaptics_rmi4_data *rmi4_data);
-	void (*put)(struct synaptics_rmi4_data *rmi4_data);
-#endif
 };
 
 struct synaptics_dsx_hw_interface {
@@ -433,9 +542,9 @@ struct synaptics_rmi4_exp_fn {
 			unsigned char intr_mask);
 };
 
-int synaptics_rmi4_bus_init_v26(void);
+int synaptics_rmi4_bus_init(void);
 
-void synaptics_rmi4_bus_exit_v26(void);
+void synaptics_rmi4_bus_exit(void);
 
 void synaptics_rmi4_new_function(struct synaptics_rmi4_exp_fn *exp_fn_module,
 		bool insert);
@@ -460,16 +569,21 @@ static inline int synaptics_rmi4_reg_write(
 	return rmi4_data->hw_if->bus_access->write(rmi4_data, addr, data, len);
 }
 
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-static inline int synaptics_rmi4_bus_get(struct synaptics_rmi4_data *rmi4_data)
+static inline ssize_t synaptics_rmi4_show_error(struct device *dev,
+		struct device_attribute *attr, char *buf)
 {
-	return rmi4_data->hw_if->bus_access->get(rmi4_data);
+	dev_warn(dev, "%s Attempted to read from write-only attribute %s\n",
+			__func__, attr->attr.name);
+	return -EPERM;
 }
-static inline void synaptics_rmi4_bus_put(struct synaptics_rmi4_data *rmi4_data)
+
+static inline ssize_t synaptics_rmi4_store_error(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
-	rmi4_data->hw_if->bus_access->put(rmi4_data);
+	dev_warn(dev, "%s Attempted to write to read-only attribute %s\n",
+			__func__, attr->attr.name);
+	return -EPERM;
 }
-#endif
 
 static inline int secure_memcpy(unsigned char *dest, unsigned int dest_size,
 		const unsigned char *src, unsigned int src_size,
@@ -496,5 +610,17 @@ static inline void hstoba(unsigned char *dest, unsigned short src)
 	dest[0] = src % 0x100;
 	dest[1] = src / 0x100;
 }
+
+//<ASUS_cap_sensor+>
+int cap_i2c_Read(struct synaptics_rmi4_data *rmi4_data, char *writebuf,
+	int writelen, char *readbuf, int readlen);
+int cap_i2c_write(struct synaptics_rmi4_data *rmi4_data, unsigned char *writebuf, int writelen);
+void cap_sensor_usb_init(struct synaptics_rmi4_data *rmi4_data);
+void cap_sensor_reg_init(struct synaptics_rmi4_data *rmi4_data);
+void cap_sensor_glove_init(struct synaptics_rmi4_data *rmi4_data);
+void cap_sensor_glove_usb_mode_init(struct synaptics_rmi4_data *rmi4_data);
+//<ASUS_cap_sensor->
+
+extern int fts_6336GU_ctpm_fw_upgrade(struct synaptics_rmi4_data *rmi4_data, u8 *pbt_buf, u32 dw_lenth);
 
 #endif

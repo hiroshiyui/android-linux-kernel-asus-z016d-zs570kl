@@ -408,7 +408,7 @@
 			reg-names = "dsi_ctrl", "dsi_phy", "mmss_misc_phys";
 
 			qcom,timing-db-mode;
-			oled-vdda-supply = <&pm8994_l19>;
+			oled-vdda-supply = <&pm8994_l22>;
 			vddio-supply = <&pm8994_l14>;
 			lab-supply = <&lab_regulator>;
 			ibb-supply = <&ibb_regulator>;

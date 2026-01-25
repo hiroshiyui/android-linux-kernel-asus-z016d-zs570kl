@@ -16,8 +16,10 @@
 #include "msm_sd.h"
 #include "msm_actuator.h"
 #include "msm_cci.h"
+#include "../debugfs/msm_debugfs.h"
 
 DEFINE_MSM_MUTEX(msm_actuator_mutex);
+struct mutex *msm_cci0_sensor_mutex;
 
 #undef CDBG
 #ifdef MSM_ACTUATOR_DEBUG
@@ -96,13 +98,11 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	struct msm_camera_i2c_reg_array *i2c_tbl = NULL;
 	CDBG("Enter\n");
 
-	if (a_ctrl == NULL) {
-		pr_err("failed. actuator ctrl is NULL");
-		return;
-	}
 
-	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg tabl is NULL");
+	if ((!a_ctrl) ||
+		(!a_ctrl->reg_tbl) ||
+		(!a_ctrl->i2c_reg_tbl)) {
+		pr_err("failed. NULL actuator pointers");
 		return;
 	}
 
@@ -172,19 +172,30 @@ static int msm_actuator_bivcm_handle_i2c_ops(
 	uint16_t value = 0, reg_data = 0;
 	uint32_t size = a_ctrl->reg_tbl_size, i = 0;
 	int32_t rc = 0;
+	uint32_t value_temp = 0;
 	struct msm_camera_i2c_reg_array i2c_tbl;
 	struct msm_camera_i2c_reg_setting reg_setting;
 	enum msm_camera_i2c_reg_addr_type save_addr_type =
 		a_ctrl->i2c_client.addr_type;
-
 	for (i = 0; i < size; i++) {
 		reg_setting.size = 1;
 		switch (write_arr[i].reg_write_type) {
 		case MSM_ACTUATOR_WRITE_DAC:
-			value = (next_lens_position <<
-			write_arr[i].data_shift) |
-			((hw_dword & write_arr[i].hw_mask) >>
-			write_arr[i].hw_shift);
+			if (write_arr[i].reg_addr == 0x337a) { /* for lc898214xd 2's complement */
+				if (next_lens_position - 2048 >= 0)
+					value = (next_lens_position - 2048) << 4;
+				else {
+					value_temp = (0x1000 - (2047 - next_lens_position)) << 4;
+					value = (uint16_t) value_temp;
+				}
+
+			} else {
+				value = (next_lens_position <<
+				write_arr[i].data_shift) |
+				((hw_dword & write_arr[i].hw_mask) >>
+				write_arr[i].hw_shift);
+			}
+
 			if (write_arr[i].reg_addr != 0xFFFF) {
 				i2c_byte1 = write_arr[i].reg_addr;
 				i2c_byte2 = value;
@@ -196,7 +207,6 @@ static int msm_actuator_bivcm_handle_i2c_ops(
 			i2c_tbl.reg_data = i2c_byte2;
 			i2c_tbl.delay = delay;
 			a_ctrl->i2c_tbl_index++;
-
 			reg_setting.reg_setting = &i2c_tbl;
 			reg_setting.data_type = a_ctrl->i2c_data_type;
 			rc = a_ctrl->i2c_client.
@@ -600,10 +610,12 @@ static int32_t msm_actuator_move_focus(
 		pr_err("Invalid direction = %d\n", dir);
 		return -EFAULT;
 	}
+
 	if (a_ctrl->i2c_reg_tbl == NULL) {
 		pr_err("failed. i2c reg tabl is NULL");
 		return -EFAULT;
 	}
+
 	if (dest_step_pos > a_ctrl->total_steps) {
 		pr_err("Step pos greater than total steps = %d\n",
 		dest_step_pos);
@@ -1352,7 +1364,7 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 		a_ctrl->i2c_reg_tbl = NULL;
 		return -EFAULT;
 	}
-
+	msm_set_actuator_ctrl(a_ctrl);
 	if (set_info->actuator_params.init_setting_size &&
 		set_info->actuator_params.init_setting_size
 		<= MAX_ACTUATOR_INIT_SET) {
@@ -1981,6 +1993,7 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 
 	msm_actuator_t->act_v4l2_subdev_ops = &msm_actuator_subdev_ops;
 	msm_actuator_t->actuator_mutex = &msm_actuator_mutex;
+	msm_cci0_sensor_mutex = msm_actuator_t->actuator_mutex;
 	msm_actuator_t->cam_name = pdev->id;
 
 	/* Set platform device handle */

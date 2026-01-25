@@ -56,6 +56,11 @@ static int ufs_get_device_info(struct ufs_hba *hba,
 
 	model_index = desc_buf[DEVICE_DESC_PARAM_PRDCT_NAME];
 
+	hba->ufs_spec_version = desc_buf[DEVICE_DESC_PARAM_SPEC_VER] << 8 |
+					desc_buf[DEVICE_DESC_PARAM_SPEC_VER + 1];
+
+	hba->ufs_vendor = card_data->wmanufacturerid;
+
 	memset(str_desc_buf, 0, QUERY_DESC_STRING_MAX_SIZE);
 	err = ufshcd_read_string_desc(hba, model_index, str_desc_buf,
 					QUERY_DESC_STRING_MAX_SIZE, ASCII_STD);

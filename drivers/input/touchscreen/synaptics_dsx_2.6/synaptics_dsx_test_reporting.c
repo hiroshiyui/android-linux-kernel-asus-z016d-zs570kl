@@ -40,7 +40,7 @@
 #include <linux/ctype.h>
 #include <linux/hrtimer.h>
 #include <linux/platform_device.h>
-#include <linux/input/synaptics_dsx_v2_6.h>
+#include <linux/input/synaptics_dsx.h>
 #include "synaptics_dsx_core.h"
 
 #define SYSFS_FOLDER_NAME "f54"
@@ -198,13 +198,23 @@
 static ssize_t concat(test_sysfs, _##propname##_show)(\
 		struct device *dev,\
 		struct device_attribute *attr,\
-		char *buf);
+		char *buf);\
+\
+static struct device_attribute dev_attr_##propname =\
+		__ATTR(propname, S_IRUGO,\
+		concat(test_sysfs, _##propname##_show),\
+		synaptics_rmi4_store_error);
 
 #define store_prototype(propname)\
 static ssize_t concat(test_sysfs, _##propname##_store)(\
 		struct device *dev,\
 		struct device_attribute *attr,\
-		const char *buf, size_t count);
+		const char *buf, size_t count);\
+\
+static struct device_attribute dev_attr_##propname =\
+		__ATTR(propname, S_IWUSR | S_IWGRP,\
+		synaptics_rmi4_show_error,\
+		concat(test_sysfs, _##propname##_store));
 
 #define show_store_prototype(propname)\
 static ssize_t concat(test_sysfs, _##propname##_show)(\
@@ -218,7 +228,7 @@ static ssize_t concat(test_sysfs, _##propname##_store)(\
 		const char *buf, size_t count);\
 \
 static struct device_attribute dev_attr_##propname =\
-		__ATTR(propname, (S_IRUGO | S_IWUGO),\
+		__ATTR(propname, (S_IRUGO | S_IWUSR | S_IWGRP),\
 		concat(test_sysfs, _##propname##_show),\
 		concat(test_sysfs, _##propname##_store));
 
@@ -2432,8 +2442,10 @@ static ssize_t test_sysfs_data_read(struct file *data_file,
 {
 	int retval;
 	unsigned int read_size;
+	unsigned int u_count;
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
 
+	u_count = count;
 	mutex_lock(&f54->status_mutex);
 
 	retval = test_check_for_idle_status();
@@ -2448,12 +2460,12 @@ static ssize_t test_sysfs_data_read(struct file *data_file,
 		goto exit;
 	}
 
-	if ((f54->data_pos + count) > f54->report_size)
+	if ((f54->data_pos + u_count) > f54->report_size)
 		read_size = f54->report_size - f54->data_pos;
 	else
-		read_size = min_t(unsigned int, count, f54->report_size);
+		read_size = min(u_count, f54->report_size);
 
-	retval = secure_memcpy(buf, count, f54->report_data + f54->data_pos,
+	retval = secure_memcpy(buf, u_count, f54->report_data + f54->data_pos,
 			f54->data_buffer_size - f54->data_pos, read_size);
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -2976,7 +2988,7 @@ static int test_set_controls(void)
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to read sense display ratio\n",
-					__func__);
+					__func__);\
 			return retval;
 		}
 		reg_addr += CONTROL_86_SIZE;
@@ -3969,9 +3981,6 @@ static int synaptics_rmi4_test_init(struct synaptics_rmi4_data *rmi4_data)
 	if (f55)
 		test_f55_init(rmi4_data);
 
-	if (rmi4_data->external_afe_buttons)
-		f54->tx_assigned++;
-
 	retval = test_set_sysfs();
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -4093,9 +4102,6 @@ static void synaptics_rmi4_test_reset(struct synaptics_rmi4_data *rmi4_data)
 
 	if (f55)
 		test_f55_init(rmi4_data);
-
-	if (rmi4_data->external_afe_buttons)
-		f54->tx_assigned++;
 
 	f54->status = STATUS_IDLE;
 

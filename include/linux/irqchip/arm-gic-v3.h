@@ -330,6 +330,11 @@
 #include <linux/stringify.h>
 #include <asm/msi.h>
 
+struct gic_resume_irq_data {
+	int gic_resume_irq_num;
+	char gic_resume_irq_name[64];
+};
+
 /*
  * We need a value to serve as a irq-type for LPIs. Choose one that will
  * hopefully pique the interest of the reviewer.

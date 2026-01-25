@@ -32,6 +32,7 @@
 #include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/jiffies.h>
+#include <linux/of_gpio.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/mmc.h>
@@ -50,6 +51,7 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 #include "sdio_ops.h"
+#include <linux/wakelock.h>
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(mmc_blk_erase_start);
 EXPORT_TRACEPOINT_SYMBOL_GPL(mmc_blk_erase_end);
@@ -66,6 +68,7 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(mmc_blk_rw_end);
 #define MMC_BKOPS_MAX_TIMEOUT	(30 * 1000) /* max time to wait in ms */
 
 static struct workqueue_struct *workqueue;
+struct wake_lock sd_remove_wake_lock;
 static const unsigned freqs[] = { 400000, 300000, 200000, 100000 };
 
 /*
@@ -2993,6 +2996,8 @@ static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
 	spin_unlock_irqrestore(&host->lock, flags);
 #endif
 
+	pr_info("%s: mmc_detect_change, SD card slot is %s\n",
+		mmc_hostname(host), gpio_get_value(host->cd_gpio) ? "non-present" : "present");
 	/*
 	 * If the device is configured as wakeup, we prevent a new sleep for
 	 * 5 s to give provision for user space to consume the event.
@@ -3002,13 +3007,6 @@ static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
 		pm_wakeup_event(mmc_dev(host), 5000);
 
 	host->detect_change = 1;
-	/*
-	 * Change in cd_gpio state, so make sure detection part is
-	 * not overided because of manual resume.
-	 */
-	if (cd_irq && mmc_bus_manual_resume(host))
-		host->ignore_bus_resume_flags = true;
-
 	mmc_schedule_delayed_work(&host->detect, delay);
 }
 
@@ -3930,8 +3928,6 @@ void mmc_rescan(struct work_struct *work)
 		host->bus_ops->detect(host);
 
 	host->detect_change = 0;
-	if (host->ignore_bus_resume_flags)
-		host->ignore_bus_resume_flags = false;
 
 	/*
 	 * Let mmc_bus_put() free the bus/bus_ops if we've found that
@@ -4185,8 +4181,7 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 
 		spin_lock_irqsave(&host->lock, flags);
 		host->rescan_disable = 0;
-		if (mmc_bus_manual_resume(host) &&
-				!host->ignore_bus_resume_flags) {
+		if (mmc_bus_manual_resume(host)) {
 			spin_unlock_irqrestore(&host->lock, flags);
 			break;
 		}
@@ -4239,6 +4234,8 @@ static int __init mmc_init(void)
 	workqueue = alloc_ordered_workqueue("kmmcd", 0);
 	if (!workqueue)
 		return -ENOMEM;
+	wake_lock_init(&sd_remove_wake_lock, WAKE_LOCK_SUSPEND,
+			"sd_remove_lock");
 
 	ret = mmc_register_bus();
 	if (ret)
@@ -4260,6 +4257,7 @@ unregister_bus:
 	mmc_unregister_bus();
 destroy_workqueue:
 	destroy_workqueue(workqueue);
+	wake_lock_destroy(&sd_remove_wake_lock);
 
 	return ret;
 }
@@ -4270,6 +4268,7 @@ static void __exit mmc_exit(void)
 	mmc_unregister_host_class();
 	mmc_unregister_bus();
 	destroy_workqueue(workqueue);
+	wake_lock_destroy(&sd_remove_wake_lock);
 }
 
 subsys_initcall(mmc_init);

@@ -52,7 +52,8 @@
 				DUALSHOCK4_CONTROLLER_BT)
 #define SONY_LED_SUPPORT (SIXAXIS_CONTROLLER | BUZZ_CONTROLLER |\
 				DUALSHOCK4_CONTROLLER)
-#define SONY_BATTERY_SUPPORT (SIXAXIS_CONTROLLER | DUALSHOCK4_CONTROLLER)
+//#define SONY_BATTERY_SUPPORT (SIXAXIS_CONTROLLER | DUALSHOCK4_CONTROLLER)
+#define SONY_BATTERY_SUPPORT 0
 #define SONY_FF_SUPPORT (SIXAXIS_CONTROLLER | DUALSHOCK4_CONTROLLER)
 
 #define MAX_LEDS 4
@@ -1104,7 +1105,7 @@ static int sony_input_configured(struct hid_device *hdev,
 					struct hid_input *hidinput)
 {
 	struct sony_sc *sc = hid_get_drvdata(hdev);
-	int ret;
+	int ret = 0;
 
 	/*
 	 * The Dualshock 4 touchpad supports 2 touches and has a
@@ -1880,6 +1881,9 @@ static int sony_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		hid_err(hdev, "can't alloc sony descriptor\n");
 		return -ENOMEM;
 	}
+
+	spin_lock_init(&sony_dev_list_lock);
+	spin_lock_init(&sc->lock);
 
 	sc->quirks = quirks;
 	hid_set_drvdata(hdev, sc);

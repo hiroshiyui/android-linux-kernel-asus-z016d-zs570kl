@@ -26,6 +26,9 @@
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
+//vkLed+++
+//#include "leds-qpnp.h"
+//vkLed---
 
 #define WLED_MOD_EN_REG(base, n)	(base + 0x60 + n*0x10)
 #define WLED_IDAC_DLY_REG(base, n)	(WLED_MOD_EN_REG(base, n) + 0x01)
@@ -249,6 +252,10 @@
 #define KPDBL_MODULE_EN_MASK		0x80
 #define NUM_KPDBL_LEDS			4
 #define KPDBL_MASTER_BIT_INDEX		0
+
+//vkLed+++
+//struct qpnp_led_data *copy_led;
+//vkLed---
 
 /**
  * enum qpnp_leds - QPNP supported led ids
@@ -866,6 +873,7 @@ static int qpnp_mpp_set(struct qpnp_led_data *led)
 	u8 val;
 	int duty_us, duty_ns, period_us;
 
+	printk("[LED] %s\n", __func__);
 	if (led->cdev.brightness) {
 		if (led->mpp_cfg->mpp_reg && !led->mpp_cfg->enable) {
 			rc = regulator_set_voltage(led->mpp_cfg->mpp_reg,
@@ -1251,7 +1259,7 @@ regulator_turn_off:
 
 static int qpnp_flash_set(struct qpnp_led_data *led)
 {
-	int rc = 0, error;
+        int rc , error;
 	int val = led->cdev.brightness;
 
 	if (led->flash_cfg->torch_enable)
@@ -1289,8 +1297,8 @@ static int qpnp_flash_set(struct qpnp_led_data *led)
 				}
 			}
 
-			rc = qpnp_led_masked_write(led,
-				FLASH_MAX_CURR(led->base), FLASH_CURRENT_MASK,
+			qpnp_led_masked_write(led, FLASH_MAX_CURR(led->base),
+				FLASH_CURRENT_MASK,
 				TORCH_MAX_LEVEL);
 			if (rc) {
 				dev_err(&led->spmi_dev->dev,
@@ -1299,7 +1307,7 @@ static int qpnp_flash_set(struct qpnp_led_data *led)
 				goto error_reg_write;
 			}
 
-			rc = qpnp_led_masked_write(led,
+			qpnp_led_masked_write(led,
 				FLASH_LED_TMR_CTRL(led->base),
 				FLASH_TMR_MASK,
 				FLASH_TMR_WATCHDOG);
@@ -1331,7 +1339,7 @@ static int qpnp_flash_set(struct qpnp_led_data *led)
 				goto error_reg_write;
 			}
 
-			rc = qpnp_led_masked_write(led,
+                        qpnp_led_masked_write(led,
 				FLASH_WATCHDOG_TMR(led->base),
 				FLASH_WATCHDOG_MASK,
 				led->flash_cfg->duration);
@@ -1379,7 +1387,7 @@ static int qpnp_flash_set(struct qpnp_led_data *led)
 				goto error_flash_set;
 			}
 
-			rc = qpnp_led_masked_write(led,
+                        qpnp_led_masked_write(led,
 				FLASH_LED_TMR_CTRL(led->base),
 				FLASH_TMR_MASK,
 				FLASH_TMR_SAFETY);
@@ -1817,6 +1825,8 @@ static void qpnp_led_set(struct led_classdev *led_cdev,
 		schedule_work(&led->work);
 }
 
+
+
 static void __qpnp_led_work(struct qpnp_led_data *led,
 				enum led_brightness value)
 {
@@ -1878,6 +1888,7 @@ static void __qpnp_led_work(struct qpnp_led_data *led,
 		mutex_unlock(&led->lock);
 
 }
+
 
 static void qpnp_led_work(struct work_struct *work)
 {
@@ -2187,6 +2198,31 @@ static int qpnp_pwm_init(struct pwm_config_data *pwm_cfg,
 	return 0;
 }
 
+//led+++
+static ssize_t pwm_us_show(struct device *dev, struct device_attribute *attr,char *buf)
+{
+	struct qpnp_led_data *led;
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct pwm_config_data *pwm_cfg;
+	int tmp=0;
+
+	led = container_of(led_cdev, struct qpnp_led_data, cdev);
+
+	switch (led->id) {
+	case QPNP_ID_LED_MPP:
+		pwm_cfg = led->mpp_cfg->pwm_cfg;
+		tmp = pwm_cfg->pwm_period_us;
+		break;
+	default:
+		dev_err(&led->spmi_dev->dev,
+			"Invalid LED id type for pwm_us\n");
+		return -EINVAL;
+	}
+
+	return snprintf(buf, PAGE_SIZE,"pwm_us:%d\n",tmp);
+}
+//led---
+
 static ssize_t pwm_us_store(struct device *dev,
 	struct device_attribute *attr,
 	const char *buf, size_t count)
@@ -2228,7 +2264,7 @@ static ssize_t pwm_us_store(struct device *dev,
 	previous_pwm_us = pwm_cfg->pwm_period_us;
 
 	pwm_cfg->pwm_period_us = pwm_us;
-	pwm_free(pwm_cfg->pwm_dev);
+    //pwm_free(pwm_cfg->pwm_dev);
 	ret = qpnp_pwm_init(pwm_cfg, led->spmi_dev, led->cdev.name);
 	if (ret) {
 		pwm_cfg->pwm_period_us = previous_pwm_us;
@@ -2692,7 +2728,7 @@ static ssize_t blink_store(struct device *dev,
 
 static DEVICE_ATTR(led_mode, 0664, NULL, led_mode_store);
 static DEVICE_ATTR(strobe, 0664, NULL, led_strobe_type_store);
-static DEVICE_ATTR(pwm_us, 0664, NULL, pwm_us_store);
+static DEVICE_ATTR(pwm_us, 0664, pwm_us_show, pwm_us_store);
 static DEVICE_ATTR(pause_lo, 0664, NULL, pause_lo_store);
 static DEVICE_ATTR(pause_hi, 0664, NULL, pause_hi_store);
 static DEVICE_ATTR(start_idx, 0664, NULL, start_idx_store);
@@ -3078,7 +3114,7 @@ static int qpnp_get_common_configs(struct qpnp_led_data *led,
 	int rc;
 	u32 val;
 	const char *temp_string;
-
+/*
 	led->cdev.default_trigger = LED_TRIGGER_DEFAULT;
 	rc = of_property_read_string(node, "linux,default-trigger",
 		&temp_string);
@@ -3086,7 +3122,7 @@ static int qpnp_get_common_configs(struct qpnp_led_data *led,
 		led->cdev.default_trigger = temp_string;
 	else if (rc != -EINVAL)
 		return rc;
-
+*/
 	led->default_on = false;
 	rc = of_property_read_string(node, "qcom,default-state",
 		&temp_string);
@@ -3687,6 +3723,7 @@ static int qpnp_get_config_mpp(struct qpnp_led_data *led,
 	u8 led_mode;
 	const char *mode;
 
+	printk("[LED] %s\n", __func__);
 	led->mpp_cfg = devm_kzalloc(&led->spmi_dev->dev,
 			sizeof(struct mpp_config_data), GFP_KERNEL);
 	if (!led->mpp_cfg) {
@@ -3747,6 +3784,7 @@ static int qpnp_get_config_mpp(struct qpnp_led_data *led,
 	} else if (rc != -EINVAL)
 		goto err_config_mpp;
 
+	printk("[LED] %s: current= %d\n", __func__, led->mpp_cfg->current_setting);
 	led->mpp_cfg->source_sel = LED_MPP_SOURCE_SEL_DEFAULT;
 	rc = of_property_read_u32(node, "qcom,source-sel", &val);
 	if (!rc)
@@ -3862,6 +3900,7 @@ static int qpnp_leds_probe(struct spmi_device *spmi)
 	const char *led_label;
 	bool regulator_probe = false;
 
+	printk("[LED] %s\n", __func__);
 	node = spmi->dev.of_node;
 	if (node == NULL)
 		return -ENODEV;
@@ -3899,6 +3938,7 @@ static int qpnp_leds_probe(struct spmi_device *spmi)
 				"Failure reading label, rc = %d\n", rc);
 			goto fail_id_check;
 		}
+		printk("[LED] %s: led_label : %s\n", __func__,led_label);
 
 		rc = of_property_read_string(temp, "linux,name",
 			&led->cdev.name);
@@ -3907,6 +3947,7 @@ static int qpnp_leds_probe(struct spmi_device *spmi)
 				"Failure reading led name, rc = %d\n", rc);
 			goto fail_id_check;
 		}
+		printk("[LED] %s: linux,name : %s\n", __func__,led->cdev.name);
 
 		rc = of_property_read_u32(temp, "qcom,max-current",
 			&led->max_current);
@@ -3965,6 +4006,9 @@ static int qpnp_leds_probe(struct spmi_device *spmi)
 						"Unable to read mpp config data\n");
 				goto fail_id_check;
 			}
+            //vkLed
+            //copy_led = led;
+            //vkLed
 		} else if (strcmp(led_label, "gpio") == 0) {
 			rc = qpnp_get_config_gpio(led, temp);
 			if (rc < 0) {

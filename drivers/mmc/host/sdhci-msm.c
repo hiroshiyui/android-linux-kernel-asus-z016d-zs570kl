@@ -2,7 +2,7 @@
  * drivers/mmc/host/sdhci-msm.c - Qualcomm MSM SDHCI Platform
  * driver source file
  *
- * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,6 +38,7 @@
 #include <linux/msm-bus.h>
 #include <linux/pm_runtime.h>
 #include <trace/events/mmc.h>
+#include <linux/switch.h>
 
 #include "sdhci-msm.h"
 #include "sdhci-msm-ice.h"
@@ -198,6 +199,7 @@
 
 /* Timeout value to avoid infinite waiting for pwr_irq */
 #define MSM_PWR_IRQ_TIMEOUT_MS 5000
+extern int sdcard_status;
 
 static const u32 tuning_block_64[] = {
 	0x00FF0FFF, 0xCCC3CCFF, 0xFFCC3CC3, 0xEFFEFFFE,
@@ -2186,8 +2188,14 @@ static int sdhci_msm_setup_vreg(struct sdhci_msm_pltfm_data *pdata,
 		goto out;
 	}
 
-	vreg_table[0] = curr_slot->vdd_data;
-	vreg_table[1] = curr_slot->vdd_io_data;
+	if(!strcmp(mmc_hostname(pdata->mmc), "mmc0") && !enable) {
+		vreg_table[1] = curr_slot->vdd_data;
+		vreg_table[0] = curr_slot->vdd_io_data;
+	} else {
+		vreg_table[0] = curr_slot->vdd_data;
+		vreg_table[1] = curr_slot->vdd_io_data;
+	}
+
 
 	for (i = 0; i < ARRAY_SIZE(vreg_table); i++) {
 		if (vreg_table[i]) {
@@ -3657,10 +3665,11 @@ void sdhci_msm_pm_qos_cpu_init(struct sdhci_host *host,
 		group->latency = latency[i].latency[SDHCI_PERFORMANCE_MODE];
 		pm_qos_add_request(&group->req, PM_QOS_CPU_DMA_LATENCY,
 			group->latency);
-		pr_info("%s (): voted for group #%d (mask=0x%lx) latency=%d\n",
+		pr_info("%s (): voted for group #%d (mask=0x%lx) latency=%d (0x%p)\n",
 			__func__, i,
 			group->req.cpus_affine.bits[0],
-			group->latency);
+			group->latency,
+			&latency[i].latency[SDHCI_PERFORMANCE_MODE]);
 	}
 	msm_host->pm_qos_prev_cpu = -1;
 	msm_host->pm_qos_group_enable = true;
@@ -3935,6 +3944,11 @@ static bool sdhci_msm_is_bootdevice(struct device *dev)
 	return true;
 }
 
+static ssize_t sd_status_name(struct switch_dev *sdev, char *buf)
+{
+	return sprintf(buf, "%d\n", sdcard_status);
+}
+
 static int sdhci_msm_probe(struct platform_device *pdev)
 {
 	struct sdhci_host *host;
@@ -4028,6 +4042,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "No device tree node\n");
 		goto pltfm_free;
 	}
+	msm_host->pdata->mmc = host->mmc;
 
 	/* Setup Clocks */
 
@@ -4156,6 +4171,8 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 			goto vreg_deinit;
 		}
 		writel_relaxed(readl_relaxed(tlmm_mem) | 0x2, tlmm_mem);
+		dev_dbg(&pdev->dev, "tlmm reg %pa value 0x%08x\n",
+				&tlmm_memres->start, readl_relaxed(tlmm_mem));
 	}
 
 	/*
@@ -4309,6 +4326,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		 * configuring it as an IRQ. Otherwise, it can be in some
 		 * weird/inconsistent state resulting in flood of interrupts.
 		 */
+		host->mmc->cd_gpio = msm_host->pdata->status_gpio;
 		sdhci_msm_setup_pins(msm_host->pdata, true);
 
 		/*
@@ -4408,6 +4426,13 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		       mmc_hostname(host->mmc), __func__, ret);
 		device_remove_file(&pdev->dev, &msm_host->auto_cmd21_attr);
 	}
+
+	msm_host->sd_status.name = "sd_status";
+	msm_host->sd_status.print_name = sd_status_name;
+	if(switch_dev_register(&msm_host->sd_status) < 0){
+		printk("switch_dev_register failed!\n");
+	}
+
 	/* Successful initialization */
 	goto out;
 

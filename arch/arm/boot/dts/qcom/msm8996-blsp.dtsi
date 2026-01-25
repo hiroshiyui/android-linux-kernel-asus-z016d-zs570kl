@@ -12,6 +12,7 @@
  */
 / {
 	aliases {
+		spi5 = &spi_5;
 		spi9 = &spi_9;
 		spi10 = &spi_10;
 		spi12 = &spi_12;
@@ -92,6 +93,32 @@
 			    <86 512 0 0>,
 			    <86 512 500 800>;
 		status = "disabled";
+	};
+
+	spi_5: spi@7579000 { /* BLSP1 QUP4 */
+		compatible = "qcom,spi-qup-v2";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg-names = "spi_physical", "spi_bam_physical";
+		reg = <0x07579000 0x600>,
+		      <0x07544000 0x2b000>;
+		interrupt-names = "spi_irq", "spi_bam_irq";
+		interrupts = <0 99 0>, <0 238 0>;
+		spi-max-frequency = <19200000>;
+		qcom,infinite-mode = <0>;
+		qcom,ver-reg-exists;
+
+		qcom,bam-consumer-pipe-index = <20>;
+		qcom,bam-producer-pipe-index = <21>;
+		qcom,master-id = <86>;
+		qcom,use-pinctrl;
+		pinctrl-names = "spi_default", "spi_sleep";
+		pinctrl-0 = <&spi_5_active>;
+		pinctrl-1 = <&spi_5_sleep>;
+		clock-names = "iface_clk", "core_clk";
+		clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
+		         <&clock_gcc clk_gcc_blsp1_qup5_spi_apps_clk>;
+		status = "ok";
 	};
 
 	spi_9: spi@75B7000 { /* BLSP2 QUP3 */

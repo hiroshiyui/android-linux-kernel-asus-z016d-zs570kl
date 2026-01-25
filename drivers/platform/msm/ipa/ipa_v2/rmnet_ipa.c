@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,6 +33,8 @@
 #include "ipa_qmi_service.h"
 #include <linux/rmnet_ipa_fd_ioctl.h>
 #include <linux/ipa.h>
+#include <linux/ip.h> //yujoe
+#include <linux/ipv6.h> //yujoe
 #include <uapi/linux/net_map.h>
 
 #include "ipa_trace.h"
@@ -70,6 +72,8 @@ static struct workqueue_struct *ipa_rm_q6_workqueue; /* IPA_RM workqueue*/
 static atomic_t is_initialized;
 static atomic_t is_ssr;
 static void *subsys_notify_handle;
+extern int rmnet_irq_flag_function_rx(void);//ASUS_BSP + Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+extern int rmnet_irq_flag_function_rx_260(void);//ASUS_BSP + Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 260
 
 u32 apps_to_ipa_hdl, ipa_to_apps_hdl; /* get handler from ipa */
 static struct mutex ipa_to_apps_pipe_handle_guard;
@@ -758,7 +762,7 @@ static int find_vchannel_name_index(const char *vchannel_name)
 {
 	int i;
 
-	for (i = 0; i < rmnet_index; i++) {
+	for (i = 0; i < MAX_NUM_OF_MUX_CHANNEL; i++) {
 		if (0 == strcmp(mux_channel[i].vchannel_name, vchannel_name))
 			return i;
 	}
@@ -1190,15 +1194,50 @@ static void apps_ipa_packet_receive_notify(void *priv,
 	struct net_device *dev = (struct net_device *)priv;
 	int result;
 	unsigned int packet_len = skb->len;
+        //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+        struct iphdr *ip4h;
+        struct ipv6hdr *ip6h;
+        unsigned char *map_payload;
+        unsigned char ip_version;
+        //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
 
 	IPAWANDBG_LOW("Rx packet was received");
 	if (evt != IPA_RECEIVE) {
 		IPAWANERR("A none IPA_RECEIVE event in wan_ipa_receive\n");
 		return;
 	}
+        //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+        map_payload = (unsigned char *)(skb->data
+                + sizeof(struct rmnet_map_header_s));
+        ip_version = (*map_payload & 0xF0) >> 4;
+        //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
 
 	skb->dev = ipa_netdevs[0];
 	skb->protocol = htons(ETH_P_MAP);
+
+        //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+        if (rmnet_irq_flag_function_rx() ==1 ){
+        	if (ip_version == 0x04){
+                        ip4h = (struct iphdr *) map_payload;
+                	pr_err_ratelimited("[QOO] IRQ57 First packet IP4 address src is %pI4",&ip4h->saddr);
+        	}else if (ip_version == 0x06){
+                        ip6h = (struct ipv6hdr *) map_payload;
+                	pr_err_ratelimited("[QOO] IRQ57 First packet IP6 address src is %pI6",&ip6h->saddr);
+                }
+        }
+         //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+
+        //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 260
+        if (rmnet_irq_flag_function_rx_260() ==1 ){
+                if (ip_version == 0x04){
+                        ip4h = (struct iphdr *) map_payload;
+                        pr_err_ratelimited("[QOO2] IRQ167 First packet IP4 address src is %pI4",&ip4h->saddr);
+                }else if (ip_version == 0x06){
+                        ip6h = (struct ipv6hdr *) map_payload;
+                        pr_err_ratelimited("[QOO2] IRQ167 First packet IP6 address src is %pI6",&ip6h->saddr);
+                }
+        }
+         //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 260
 
 	if (dev->stats.rx_packets % IPA_WWAN_RX_SOFTIRQ_THRESH == 0) {
 		trace_rmnet_ipa_netifni(dev->stats.rx_packets);
@@ -1312,8 +1351,6 @@ static int ipa_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 	/*  Extended IOCTLs  */
 	case RMNET_IOCTL_EXTENDED:
-		if (!ns_capable(dev_net(dev)->user_ns, CAP_NET_ADMIN))
-			return -EPERM;
 		IPAWANDBG("get ioctl: RMNET_IOCTL_EXTENDED\n");
 		if (copy_from_user(&extend_ioctl_data,
 			(u8 *)ifr->ifr_ifru.ifru_data,
@@ -1610,7 +1647,6 @@ static int ipa_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 				IPAWANERR("Failed to allocate memory.\n");
 				return -ENOMEM;
 			}
-			extend_ioctl_data.u.if_name[IFNAMSIZ-1] = '\0';
 			len = sizeof(wan_msg->upstream_ifname) >
 			sizeof(extend_ioctl_data.u.if_name) ?
 				sizeof(extend_ioctl_data.u.if_name) :
@@ -2558,7 +2594,7 @@ int rmnet_ipa_set_data_quota(struct wan_ioctl_set_data_quota *data)
 	if (index == MAX_NUM_OF_MUX_CHANNEL) {
 		IPAWANERR("%s is an invalid iface name\n",
 			  data->interface_name);
-		return -ENODEV;
+		return -EFAULT;
 	}
 
 	mux_id = mux_channel[index].mux_id;
@@ -2676,10 +2712,7 @@ int rmnet_ipa_query_tethering_stats(struct wan_ioctl_query_tether_stats *data,
 		IPAWANERR("reset the pipe stats\n");
 	} else {
 		/* print tethered-client enum */
-		if (data == NULL)
-			return -EINVAL;
-		IPAWANDBG_LOW("Tethered-client enum(%d)\n",
-				data->ipa_client);
+		IPAWANDBG_LOW("Tethered-client enum(%d)\n", data->ipa_client);
 	}
 
 	rc = ipa_qmi_get_data_stats(req, resp);
@@ -2688,7 +2721,7 @@ int rmnet_ipa_query_tethering_stats(struct wan_ioctl_query_tether_stats *data,
 		kfree(req);
 		kfree(resp);
 		return rc;
-	} else if (data == NULL) {
+	} else if (reset) {
 		kfree(req);
 		kfree(resp);
 		return 0;

@@ -25,8 +25,11 @@
 #include "core.h"
 #include "sdio_cis.h"
 #include "bus.h"
+#include <linux/wakelock.h>
 
 #define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
+int sdcard_status = 0;
+EXPORT_SYMBOL(sdcard_status);
 
 static ssize_t type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -405,6 +408,8 @@ int mmc_add_card(struct mmc_card *card)
 	card->dev.of_node = mmc_of_find_child_device(card->host, 0);
 
 	ret = device_add(&card->dev);
+	if(!strcmp(mmc_hostname(card->host), "mmc0"))
+		sdcard_status = 1;
 	if (ret)
 		return ret;
 
@@ -431,7 +436,10 @@ void mmc_remove_card(struct mmc_card *card)
 		} else {
 			pr_info("%s: card %04x removed\n",
 				mmc_hostname(card->host), card->rca);
+			wake_lock_timeout(&sd_remove_wake_lock, 2*HZ);
 		}
+		if(!strcmp(mmc_hostname(card->host), "mmc0"))
+			sdcard_status = 0;
 		device_del(&card->dev);
 		of_node_put(card->dev.of_node);
 	}

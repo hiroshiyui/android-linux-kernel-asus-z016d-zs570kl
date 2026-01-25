@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -71,7 +71,7 @@ static long ipa3_wan_ioctl(struct file *filp,
 		unsigned int cmd,
 		unsigned long arg)
 {
-	int retval = 0, rc = 0;
+	int retval = 0;
 	u32 pyld_sz;
 	u8 *param = NULL;
 
@@ -79,17 +79,8 @@ static long ipa3_wan_ioctl(struct file *filp,
 		DRIVER_NAME);
 
 	if (!ipa3_process_ioctl) {
-
-		if ((cmd == WAN_IOC_SET_LAN_CLIENT_INFO) ||
-			(cmd == WAN_IOC_CLEAR_LAN_CLIENT_INFO)) {
-			IPAWANDBG("Modem is in SSR\n");
-			IPAWANDBG("Still allow IOCTL for exceptions (%d)\n",
-				cmd);
-		} else {
-			IPAWANERR("Modem is in SSR, ignoring ioctl (%d)\n",
-				cmd);
-			return -EAGAIN;
-		}
+		IPAWANDBG("modem is in SSR, ignoring ioctl\n");
+		return -EAGAIN;
 	}
 
 	switch (cmd) {
@@ -255,14 +246,10 @@ static long ipa3_wan_ioctl(struct file *filp,
 			retval = -EFAULT;
 			break;
 		}
-		rc = rmnet_ipa3_set_data_quota(
-			(struct wan_ioctl_set_data_quota *)param);
-		if (rc != 0) {
+		if (rmnet_ipa3_set_data_quota(
+		(struct wan_ioctl_set_data_quota *)param)) {
 			IPAWANERR("WAN_IOC_SET_DATA_QUOTA failed\n");
-			if (rc == -ENODEV)
-				retval = -ENODEV;
-			else
-				retval = -EFAULT;
+			retval = -EFAULT;
 			break;
 		}
 		if (copy_to_user((u8 *)arg, param, pyld_sz)) {

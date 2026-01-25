@@ -40,14 +40,29 @@
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
-#include <linux/input/synaptics_dsx_v2_6.h>
+#include <linux/input/synaptics_dsx.h>
 #include "synaptics_dsx_core.h"
+#include <linux/i2c.h>
 #ifdef KERNEL_ABOVE_2_6_38
 #include <linux/input/mt.h>
 #endif
+#include <linux/proc_fs.h>
+#include <linux/uaccess.h>
+//<ASUS_led+>
+#ifdef ASUS_FACTORY_BUILD
+#include "../drivers/leds/leds-qpnp.h"
+#endif
+//<ASUS_led->
+#include <linux/asus_project.h>
+//<ASUS_focal+>
+#include <linux/fs.h>
+#include "test_lib.h"
+#include "Test_FT6X36.h"
+//<ASUS_focal->
 
 #define INPUT_PHYS_NAME "synaptics_dsx/touch_input"
 #define STYLUS_PHYS_NAME "synaptics_dsx/stylus"
+#define DEBUGFS_DIR_NAME "ts_debug"
 
 #define VIRTUAL_KEY_MAP_FILE_NAME "virtualkeys." PLATFORM_DRIVER_NAME
 
@@ -55,7 +70,15 @@
 #define TYPE_B_PROTOCOL
 #endif
 
-#define WAKEUP_GESTURE false
+#define WAKEUP_GESTURE true
+
+#define ASUS_TOUCH_PROXIMITY_NODE	//<ASUS_Proximity+>
+
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE	
+#define PROXIMITY_NAME "asus_touch_proximity_status"
+#endif
+//<ASUS_Proximity->
 
 #define NO_0D_WHILE_2D
 #define REPORT_2D_Z
@@ -67,11 +90,11 @@
 #define F12_DATA_15_WORKAROUND
 
 #define IGNORE_FN_INIT_FAILURE
-
+/*
 #define FB_READY_RESET
 #define FB_READY_WAIT_MS 100
 #define FB_READY_TIMEOUT_S 30
-
+*/
 #define RPT_TYPE (1 << 0)
 #define RPT_X_LSB (1 << 1)
 #define RPT_X_MSB (1 << 2)
@@ -113,15 +136,127 @@
 #define F12_CONTINUOUS_MODE 0x00
 #define F12_WAKEUP_GESTURE_MODE 0x02
 #define F12_UDG_DETECT 0x0f
+#define F34_FLASH_CTRL00 0x0A
+#define F51_CUSTOM_CTRL 0x407
+
+#ifdef WAKEUP_GESTURE
+#define  KEY_GESTURE_E		KEY_E//KEY_F21//KEY_E
+#define  KEY_GESTURE_C		KEY_C//KEY_F20//KEY_C
+//#define  KEY_GESTURE_M	KEY_M 
+//#define  KEY_GESTURE_L	KEY_L
+#define  KEY_GESTURE_W		KEY_W//KEY_F23//KEY_W
+#define  KEY_GESTURE_S		KEY_S//KEY_F22//KEY_S 
+#define  KEY_GESTURE_V		KEY_V//KEY_F18//KEY_V
+#define  KEY_GESTURE_Z		KEY_Z//KEY_F19//KEY_Z
+#define  KEY_GESTURE_DCLICK	KEY_POWER
+#define  KEY_GESTURE_SWIPE_UP	KEY_WAKEUP
+
+#define GESTURE_SWITCH		0x40//1000000
+#define GESTURE_VEE_REG		0x0A
+#define GESTURE_OTHERS		0x0B
+#define GESTURE_DOUBLECLICK	0x03
+#define GESTURE_SWIPE	0x07
+#define GESTURE_E		0x65
+#define GESTURE_C		0x63
+//#define GESTURE_M		0x6D
+//#define GESTURE_L		0x44
+#define GESTURE_W		0x77
+#define GESTURE_S		0x73
+#define GESTURE_V		0x02
+#define GESTURE_Z		0x7A
+#endif
+
+extern int fw_update_state;
+extern char* androidboot_mode; //<ASUS_bootmode+>
+
+//<ASUS_cap_sensor+>
+int btn_back;
+int btn_menu;
+int btn_home;
+//<ASUS_cap_sensor->
+
+//<ASUS_DTP+>
+int dclick_mode = 0;
+//<ASUS_DTP->
+//<ASUS_SWIPE+>
+int swipe_mode = 0;
+//<ASUS_SWIPE->
+//<ASUS_Gesture+>
+int gesture_mode = 0;
+//<ASUS_Gesture->
+//<ASUS_Glove+>
+int glove_mode = 0;
+//<ASUS_Glove->
+//<ASUS_COVER+>
+int cover_mode = 0;
+//<ASUS_COVER->
+int screen_flag=1;
+//<ASUS_focal+>
+static int fts_btn_back;
+static int fts_btn_menu;
+static int fts_btn_home;
+static unsigned char cap_addr = FTS_CAP_I2C_ADDR;
+unsigned int cap_sel_status = 1;    //cap_sel_status(description cap chip) -> 0:micro chip 1:focal chip
+static unsigned int buf_count_add=0;
+static unsigned int buf_count_neg=0;
+u8 buf_touch_data[30*POINT_READ_BUF] = { 0 };
+//extern int fts_6336GU_ctpm_fw_upgrade(struct synaptics_rmi4_data *rmi4_data, u8 *pbt_buf, u32 dw_lenth);
+int fts_a5_flag = 0;
+static struct proc_dir_entry *fts_proc_entry;
+static unsigned char proc_operate_mode = PROC_UPGRADE;
+//<ASUS_focal->
+
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+struct proc_dir_entry *tp_proximity_proc = NULL; //<ASUS_Proximity+>
+#endif
+
+//ASUS_FACTORY+
+#if defined(ASUS_FACTORY_BUILD)
+struct proc_dir_entry *tp_entry = NULL;
+static int touch_proc_show(struct seq_file *m, void *v) {
+
+     if(!tp_entry)
+
+     return seq_printf(m, "-1\n");
+
+     else
+
+     return seq_printf(m, "1\n");
+
+}
+
+static int  touch_proc_open(struct inode *inode, struct  file *file) {
+
+  return single_open(file, touch_proc_show, NULL);
+
+}
+
+static const struct file_operations touch_status_fops = {
+	.owner = THIS_MODULE,
+    .open =  touch_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+int create_asusproc_tp_status_entry( void )
+{   
+   tp_entry = proc_create("asus_tp_status", S_IWUGO| S_IRUGO, NULL, &touch_status_fops);
+    if (!tp_entry)
+        return -ENOMEM;
+	return 0;
+}
+#endif
+//ASUS_FACTORY-
 
 static int synaptics_rmi4_check_status(struct synaptics_rmi4_data *rmi4_data,
 		bool *was_in_bl_mode);
 static int synaptics_rmi4_free_fingers(struct synaptics_rmi4_data *rmi4_data);
+static int synaptics_rmi4_reinit_device(struct synaptics_rmi4_data *rmi4_data);
 static int synaptics_rmi4_reset_device(struct synaptics_rmi4_data *rmi4_data,
 		bool rebuild);
 
 #ifdef CONFIG_FB
-static void synaptics_rmi4_fb_notify_resume_work(struct work_struct *work);
 static int synaptics_rmi4_fb_notifier_cb(struct notifier_block *self,
 		unsigned long event, void *data);
 #endif
@@ -172,19 +307,97 @@ static ssize_t synaptics_rmi4_wake_gesture_store(struct device *dev,
 static ssize_t synaptics_rmi4_virtual_key_map_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf);
 
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-static ssize_t synaptics_rmi4_secure_touch_enable_show(struct device *dev,
+static int synaptics_rmi4_sw_reset(struct synaptics_rmi4_data *rmi4_data);
+
+//<ASUS_cap_sensor+>
+static ssize_t synaptics_rmi4_cap_sensor_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 
-static ssize_t synaptics_rmi4_secure_touch_enable_store(struct device *dev,
+static ssize_t synaptics_rmi4_cap_sensor_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count);
 
-static ssize_t synaptics_rmi4_secure_touch_show(struct device *dev,
+static ssize_t synaptics_rmi4_cap1_status_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_cap2_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_cap3_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf);		
+//<ASUS_cap_sensor->
+
+//<ASUS_DTP+>
+static ssize_t synaptics_rmi4_dclick_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_dclick_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+//<ASUS_DTP->
+//<ASUS_SWIPE+>
+static ssize_t synaptics_rmi4_swipe_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_swipe_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+//<ASUS_SWIPE->
+//<ASUS_Gesture+>
+static ssize_t synaptics_rmi4_gesture_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_gesture_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+//<ASUS_Gesture->
+//<ASUS_Glove+>
+static ssize_t synaptics_rmi4_glove_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t synaptics_rmi4_set_glove_param(struct synaptics_rmi4_data *rmi4_data);
+//<ASUS_Glove->
+//<ASUS_COVER+>
+static ssize_t synaptics_rmi4_cover_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_cover_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t synaptics_rmi4_set_cover_param(struct synaptics_rmi4_data *rmi4_data);
+//<ASUS_COVER->
+//<ASUS_focal+>
+static ssize_t fts_fwupgradeapp_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t fts_ftsselftest_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t fts_ftsselftest_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t cap_chip_select_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+static ssize_t fts_fw_version_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+static ssize_t fts_fts_sw_reset_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count);
+//<ASUS_focal->
+
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos);
+static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
+#else
+static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request, int *eof, void *data);
+static int tp_proximity_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
 #endif
 
-static irqreturn_t synaptics_rmi4_irq(int irq, void *data);
+static unsigned int touch_proximity_at_phone = 0;
 
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static const struct file_operations tp_proximity_proc_fops = {
+	.owner = THIS_MODULE,
+	.read = tp_proximity_proc_read,
+	.write = tp_proximity_proc_write,
+};
+#endif
+#endif
+//<ASUS_Proximity->
+
+struct synaptics_rmi4_data *gb_rmi4_data;
+		
 struct synaptics_rmi4_f01_device_status {
 	union {
 		struct {
@@ -453,6 +666,87 @@ struct synaptics_rmi4_f12_ctrl_8 {
 	};
 };
 
+//<ASUS_Glove+>
+struct synaptics_rmi4_f12_ctrl_10 {
+	union {
+		struct {
+			unsigned char noise_floor;
+			unsigned char min_peak_amp;
+			unsigned char peak_merge_threshold;
+			unsigned char drumming_acc_threshold;
+			unsigned char min_drumming_separation;
+			unsigned char noise_peak_filter;
+			unsigned char reserved;
+		};
+		unsigned char data[7];
+	};	
+};
+//<ASUS_Glove->
+
+//<ASUS_COVER+>
+struct synaptics_rmi4_f12_ctrl_15 {
+	union {
+		struct {
+			unsigned char finger_amp_threshold;
+			unsigned char small_finger_amp_threshold;
+			unsigned char small_finger_border_size;
+			unsigned char negative_finger_amp_threshold;
+			unsigned char palm_amp_threshold;
+			unsigned char palm_area;
+			unsigned char negative_finger_low_ground_mass_threshold;
+		};
+		unsigned char data[7];
+	};	
+};
+//<ASUS_COVER->
+
+//<ASUS_DTP+>
+struct synaptics_rmi4_f12_ctrl_18 {
+	union {
+		struct {
+			unsigned char double_tap_x0_LSB;
+			unsigned char double_tap_x0_MSB;
+			unsigned char double_tap_y0_LSB;
+			unsigned char double_tap_y0_MSB;
+			unsigned char double_tap_x1_LSB;
+			unsigned char double_tap_x1_MSB;
+			unsigned char double_tap_y1_LSB;
+			unsigned char double_tap_y1_MSB;
+			unsigned char max_tap_time;
+			unsigned char max_tap_distance;
+			unsigned char swipe_x0_LSB;
+			unsigned char swipe_x0_MSB;
+			unsigned char swipe_y0_LSB;
+			unsigned char swipe_y0_MSB;
+			unsigned char swipe_x1_LSB;
+			unsigned char swipe_x1_MSB;
+			unsigned char swipe_y1_LSB;
+			unsigned char swipe_y1_MSB;
+			unsigned char swipe_min_disance;
+			unsigned char swipe_min_speed;
+			unsigned char circle_max_endpoint_gap;
+			unsigned char circle_min_speed;
+			unsigned char triangle_max_endpoint_gap;
+			unsigned char triangle_min_speed;
+			unsigned char triangle_min_angle;
+			unsigned char up_vee:1;
+			unsigned char down_vee:1;
+			unsigned char left_vee:1;
+			unsigned char right_vee:1;
+			unsigned char f12_ctr18_05_b4__7:4;
+			unsigned char vee_min_endpoint_gap;
+			unsigned char vee_min_speed;
+			unsigned char vee_angle_tolerance;
+			unsigned char unicode_max_endpoint_gap;
+			unsigned char unicode_min_speed;
+			unsigned char f12_ctr18_06_orientation:3;
+			unsigned char f12_ctr18_06_b3__7:5;
+		};
+		unsigned char data[32];
+	};	
+};
+//<ASUS_DTP->
+
 struct synaptics_rmi4_f12_ctrl_23 {
 	union {
 		struct {
@@ -526,10 +820,7 @@ struct synaptics_rmi4_f1a_query {
 	union {
 		struct {
 			unsigned char max_button_count:3;
-			unsigned char f1a_query0_b3__4:2;
-			unsigned char has_query4:1;
-			unsigned char has_query3:1;
-			unsigned char has_query2:1;
+			unsigned char reserved:5;
 			unsigned char has_general_control:1;
 			unsigned char has_interrupt_enable:1;
 			unsigned char has_multibutton_select:1;
@@ -540,18 +831,6 @@ struct synaptics_rmi4_f1a_query {
 			unsigned char has_filter_strength:1;
 		} __packed;
 		unsigned char data[2];
-	};
-};
-
-struct synaptics_rmi4_f1a_query_4 {
-	union {
-		struct {
-			unsigned char has_ctrl19:1;
-			unsigned char f1a_query4_b1__4:4;
-			unsigned char has_ctrl24:1;
-			unsigned char f1a_query4_b6__7:2;
-		} __packed;
-		unsigned char data[1];
 	};
 };
 
@@ -609,36 +888,1314 @@ static struct synaptics_rmi4_exp_fn_data exp_data;
 static struct synaptics_dsx_button_map *vir_button_map;
 
 static struct device_attribute attrs[] = {
-	__ATTR(reset, S_IWUSR | S_IWGRP,
-			NULL,
+	__ATTR(reset, (S_IWUSR | S_IWGRP),
+			synaptics_rmi4_show_error,
 			synaptics_rmi4_f01_reset_store),
 	__ATTR(productinfo, S_IRUGO,
 			synaptics_rmi4_f01_productinfo_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(buildid, S_IRUGO,
 			synaptics_rmi4_f01_buildid_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(flashprog, S_IRUGO,
 			synaptics_rmi4_f01_flashprog_show,
-			NULL),
+			synaptics_rmi4_store_error),
 	__ATTR(0dbutton, (S_IRUGO | S_IWUSR | S_IWGRP),
 			synaptics_rmi4_0dbutton_show,
 			synaptics_rmi4_0dbutton_store),
-	__ATTR(suspend, S_IWUSR | S_IWGRP,
-			NULL,
+	__ATTR(suspend, (S_IWUSR | S_IWGRP),
+			synaptics_rmi4_show_error,
 			synaptics_rmi4_suspend_store),
 	__ATTR(wake_gesture, (S_IRUGO | S_IWUSR | S_IWGRP),
 			synaptics_rmi4_wake_gesture_show,
 			synaptics_rmi4_wake_gesture_store),
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-	__ATTR(secure_touch_enable, (S_IRUGO | S_IWUSR | S_IWGRP),
-			synaptics_rmi4_secure_touch_enable_show,
-			synaptics_rmi4_secure_touch_enable_store),
-	__ATTR(secure_touch, S_IRUGO ,
-			synaptics_rmi4_secure_touch_show,
+	//<ASUS_cap_sensor+>	
+	__ATTR(cap_sensor, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_cap_sensor_show,
+			synaptics_rmi4_cap_sensor_store),	
+	__ATTR(cap1_status, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_cap1_status_show,
 			NULL),
-#endif
+	__ATTR(cap2_status, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_cap2_status_show,
+			NULL),
+	__ATTR(cap3_status, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_cap3_status_show,
+			NULL),	
+	//<ASUS_cap_sensor->
+	//<ASUS_DTP+>
+	__ATTR(dclickmode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_dclick_mode_show,
+			synaptics_rmi4_dclick_mode_store),	
+	//<ASUS_DTP->
+	//<ASUS_SWIPE+>
+	__ATTR(swipemode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_swipe_mode_show,
+			synaptics_rmi4_swipe_mode_store),	
+	//<ASUS_SWIPE->
+	//<ASUS_Gesture+>
+	__ATTR(gesturemode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_gesture_mode_show,
+			synaptics_rmi4_gesture_mode_store),
+	//<ASUS_Gesture->
+	//<ASUS_Glove+>
+	__ATTR(glovemode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_glove_mode_show,
+			synaptics_rmi4_glove_mode_store),
+	//<ASUS_Glove->
+	//<ASUS_COVER+>
+	__ATTR(covermode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_cover_mode_show,
+			synaptics_rmi4_cover_mode_store),
+	//<ASUS_COVER->
+    //<ASUS_focal+>
+    __ATTR(fts_selftest, (S_IRUGO | S_IWUSR | S_IWGRP),
+			fts_ftsselftest_show,
+			fts_ftsselftest_store),
+    __ATTR(fwupgradeapp, (S_IRUGO | S_IWUSR | S_IWGRP),
+        NULL,
+        fts_fwupgradeapp_store),
+    __ATTR(cap_chip_status, (S_IRUGO | S_IWUSR | S_IWGRP),
+			cap_chip_select_show,
+			NULL),
+    __ATTR(fts_fw_info, (S_IRUGO | S_IWUSR | S_IWGRP),
+			fts_fw_version_show,
+			NULL),
+    __ATTR(fts_sw_reset, (S_IRUGO | S_IWUSR | S_IWGRP),
+			NULL,
+			fts_fts_sw_reset_store),
+    //<ASUS_focal->
 };
+
+//<ASUS_COVER+>
+static ssize_t synaptics_rmi4_set_cover_param(struct synaptics_rmi4_data *rmi4_data)
+{
+	int retval;	
+	struct synaptics_rmi4_f12_ctrl_10 *ctrl_10 = NULL;
+	struct synaptics_rmi4_f12_ctrl_15 *ctrl_15 = NULL;
+	struct synaptics_rmi4_f12_ctrl_18 *ctrl_18 = NULL;
+
+    unsigned char buf;
+    /*unsigned char buf_val[2] = {0};
+
+	if(cap_sel_status == 1) {
+		buf_val[0] = 0xa5;
+        buf_val[1] = 0x00;
+        retval = cap_i2c_write(rmi4_data, buf_val, 2);
+        if(retval < 0){
+            printk("[cap] write reg_addr=0x%02x, retval =%d\n", buf_val[0], retval);
+        }
+        msleep(5);
+  }*/
+
+
+	ctrl_10 = kmalloc(sizeof(*ctrl_10), GFP_KERNEL);
+	if (!ctrl_10) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_10\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	
+	ctrl_15 = kmalloc(sizeof(*ctrl_15), GFP_KERNEL);
+	if (!ctrl_15) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_15\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	
+	//<ASUS_DTP+>
+	ctrl_18 = kmalloc(sizeof(*ctrl_18), GFP_KERNEL);
+	if (!ctrl_18) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_18\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	//<ASUS_DTP->
+	
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+	if (retval < 0)
+		return -EINVAL;
+	dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s enable cover,old min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+				
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl15_base_addr,
+			ctrl_15->data,
+			sizeof(ctrl_15->data));
+	if (retval < 0)
+		return -EINVAL;	
+	dev_dbg(rmi4_data->pdev->dev.parent,
+			"%s old ctrl_15->data=0x%02x, finger_thrshold=0x%02x\n", __func__, ctrl_15->data[0], ctrl_15->finger_amp_threshold);
+			
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl18_base_addr,
+			ctrl_18->data,
+			sizeof(ctrl_18->data));
+	if (retval < 0)
+		return -EINVAL;
+			
+	//ctrl18+		
+	/*
+	printk("%s ctrl18 double_tap_x0_LSB=0x%02x\n", __func__, ctrl_18->double_tap_x0_LSB);
+	printk("%s ctrl18 double_tap_x0_MSB=0x%02x\n", __func__, ctrl_18->double_tap_x0_MSB);
+	printk("%s ctrl18 double_tap_y0_LSB=0x%02x\n", __func__, ctrl_18->double_tap_y0_LSB);
+	printk("%s ctrl18 double_tap_y0_MSB=0x%02x\n", __func__, ctrl_18->double_tap_y0_MSB);
+	printk("%s ctrl18 double_tap_x1_LSB=0x%02x\n", __func__, ctrl_18->double_tap_x1_LSB);
+	printk("%s ctrl18 double_tap_x1_MSB=0x%02x\n", __func__, ctrl_18->double_tap_x1_MSB);
+	printk("%s ctrl18 double_tap_y1_LSB=0x%02x\n", __func__, ctrl_18->double_tap_y1_LSB);
+	printk("%s ctrl18 double_tap_y1_MSB=0x%02x\n", __func__, ctrl_18->double_tap_y1_MSB);
+	
+	printk("%s ctrl18 swipe_x0_LSB=0x%02x\n", __func__, ctrl_18->swipe_x0_LSB);
+	printk("%s ctrl18 swipe_x0_MSB=0x%02x\n", __func__, ctrl_18->swipe_x0_MSB);
+	printk("%s ctrl18 swipe_y0_LSB=0x%02x\n", __func__, ctrl_18->swipe_y0_LSB);
+	printk("%s ctrl18 swipe_y0_MSB=0x%02x\n", __func__, ctrl_18->swipe_y0_MSB);
+	printk("%s ctrl18 swipe_x1_LSB=0x%02x\n", __func__, ctrl_18->swipe_x1_LSB);
+	printk("%s ctrl18 swipe_x1_MSB=0x%02x\n", __func__, ctrl_18->swipe_x1_MSB);
+	printk("%s ctrl18 swipe_y1_LSB=0x%02x\n", __func__, ctrl_18->swipe_y1_LSB);
+	printk("%s ctrl18 swipe_y1_MSB=0x%02x\n", __func__, ctrl_18->swipe_y1_MSB);
+	*/
+	//ctrl18-
+		
+	//Enable cover mode
+    
+	if (cover_mode == 1) {
+        printk("%s into cover mode\n", __func__);
+        //Active Zone control
+        buf = 0x01;
+        retval = synaptics_rmi4_reg_write(rmi4_data,
+			F51_CUSTOM_CTRL,
+			&buf,
+			sizeof(buf));
+		if (retval < 0)
+			return -EINVAL;
+
+		//ctrl10+
+        if(glove_mode == 1) {
+            ctrl_10->min_peak_amp = 0x0A;
+		}else {
+            ctrl_10->min_peak_amp = 0x0F;
+        }
+		
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s enable cover, min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+		//ctrl10-
+		
+		//ctrl15+				
+		ctrl_15->finger_amp_threshold = 0x2C;
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl15_base_addr,
+			ctrl_15->data,
+			sizeof(ctrl_15->data));
+ 		if (retval < 0)
+			return -EINVAL;
+			
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl15_base_addr,
+			ctrl_15->data,
+			sizeof(ctrl_15->data));
+ 		if (retval < 0)
+ 			return -EINVAL;
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s ctrl_15->data=0x%02x, finger_thrshold=0x%02x\n", __func__, ctrl_15->data[0], ctrl_15->finger_amp_threshold);
+		//ctrl15-
+		
+		//ctrl18+
+		ctrl_18->double_tap_x0_LSB = 0x64;
+		ctrl_18->double_tap_x0_MSB = 0x00;
+		ctrl_18->double_tap_y0_LSB = 0x32;
+		ctrl_18->double_tap_y0_MSB = 0x00;
+		ctrl_18->double_tap_x1_LSB = 0xe8;
+		ctrl_18->double_tap_x1_MSB = 0x03;
+		ctrl_18->double_tap_y1_LSB = 0xe8;
+		ctrl_18->double_tap_y1_MSB = 0x03;
+		
+		ctrl_18->swipe_x0_LSB = 0x64;
+		ctrl_18->swipe_x0_MSB = 0x00;
+		ctrl_18->swipe_y0_LSB = 0x32;
+		ctrl_18->swipe_y0_MSB = 0x00;
+		ctrl_18->swipe_x1_LSB = 0xe8;
+		ctrl_18->swipe_x1_MSB = 0x03;
+		ctrl_18->swipe_y1_LSB = 0xe8;
+		ctrl_18->swipe_y1_MSB = 0x03;
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl18_base_addr,
+			ctrl_18->data,
+			sizeof(ctrl_18->data));
+ 		if (retval < 0)
+ 			return -EINVAL;
+		//ctrl18-
+	} else {
+		//disable cover mode
+        printk("%s not into cover mode\n", __func__);
+        //Active Zone control
+        buf = 0x00;
+        retval = synaptics_rmi4_reg_write(rmi4_data,
+			F51_CUSTOM_CTRL,
+			&buf,
+			sizeof(buf));
+		if (retval < 0)
+			return -EINVAL;
+        
+		//ctrl10+		
+        if(glove_mode == 1) {
+            ctrl_10->min_peak_amp = 0x0C;
+        }else {
+            ctrl_10->min_peak_amp = 0x14;
+        }
+		
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s disable cover, min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+		//ctrl10-
+		//ctrl15+
+		ctrl_15->finger_amp_threshold = 0x48;
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl15_base_addr,
+			ctrl_15->data,
+			sizeof(ctrl_15->data));
+		if (retval < 0)
+			return -EINVAL;
+	
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl15_base_addr,
+			ctrl_15->data,
+			sizeof(ctrl_15->data));
+		if (retval < 0)
+			return -EINVAL;	
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s ctrl_15->data=0x%02x, finger_thrshold=0x%02x\n", __func__, ctrl_15->data[0], ctrl_15->finger_amp_threshold);
+		//ctrl15-
+		
+		//ctrl18+
+		ctrl_18->double_tap_x0_LSB = 0x9a;
+		ctrl_18->double_tap_x0_MSB = 0x00;
+		ctrl_18->double_tap_y0_LSB = 0x93;
+		ctrl_18->double_tap_y0_MSB = 0x00;
+		ctrl_18->double_tap_x1_LSB = 0x9e;
+		ctrl_18->double_tap_x1_MSB = 0x03;
+		ctrl_18->double_tap_y1_LSB = 0x80;
+		ctrl_18->double_tap_y1_MSB = 0x07;
+		
+		ctrl_18->swipe_x0_LSB = 0x9a;
+		ctrl_18->swipe_x0_MSB = 0x00;
+		ctrl_18->swipe_y0_LSB = 0x93;
+		ctrl_18->swipe_y0_MSB = 0x00;
+		ctrl_18->swipe_x1_LSB = 0x9e;
+		ctrl_18->swipe_x1_MSB = 0x03;
+		ctrl_18->swipe_y1_LSB = 0x80;
+		ctrl_18->swipe_y1_MSB = 0x07;
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl18_base_addr,
+			ctrl_18->data,
+			sizeof(ctrl_18->data));
+ 		if (retval < 0)
+ 			return -EINVAL;
+		//ctrl18-
+	}
+	
+exit:
+	kfree(ctrl_10);
+	kfree(ctrl_15);
+	kfree(ctrl_18);
+	
+	return retval;
+}
+//<ASUS_COVER->
+//<ASUS_Glove+>
+static ssize_t synaptics_rmi4_set_glove_param(struct synaptics_rmi4_data *rmi4_data)
+{
+	int retval;
+    unsigned char cap_buf[2] = {0};
+	struct synaptics_rmi4_f12_ctrl_10 *ctrl_10 = NULL;
+	struct synaptics_rmi4_f12_ctrl_23 *ctrl_23 = NULL;
+	
+	ctrl_10 = kmalloc(sizeof(*ctrl_10), GFP_KERNEL);
+	if (!ctrl_10) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_10\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	
+	ctrl_23 = kmalloc(sizeof(*ctrl_23), GFP_KERNEL);
+	if (!ctrl_23) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_23\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+	if (retval < 0)
+		return -EINVAL;	
+		
+	dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s old glove, min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+	
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl23_base_addr,
+			ctrl_23->data,
+			sizeof(ctrl_23->data));
+	if (retval < 0)
+		return -EINVAL;	
+		
+	dev_dbg(rmi4_data->pdev->dev.parent,
+			"%s old ctrl23 data[0] = 0x%x\n", __func__, ctrl_23->data[0]);
+	//Enable glove mode
+	if (glove_mode == 1) {
+		printk("%s into glove mode\n", __func__);
+		if (rmi4_data->usb_status == 1) {
+			if(cap_sel_status == 0) { //<ASUS_focal+>
+				printk("[cap] golve=1 usb=1 init\n");
+				cap_sensor_glove_usb_mode_init(rmi4_data);
+			}
+		}
+		else {
+			if(cap_sel_status == 0) { //<ASUS_focal+>
+				printk("[cap] golve=1 usb=0 init\n");
+				cap_sensor_glove_init(rmi4_data);
+			}
+		}
+
+		//<ASUS_focal+>
+		if(cap_sel_status == 1) {
+			cap_buf[0] = 0xc0;
+			cap_buf[1] = 0x01;
+			retval = cap_i2c_write(rmi4_data, cap_buf, 2);
+			if(retval < 0)
+				printk("%s [fts] retval = %d glove mode write failure.\n", __func__, retval);
+		}
+		//<ASUS_focal->
+
+		ctrl_23->gloved_finger_enable |= 0x01;		
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl23_base_addr,
+			ctrl_23->data,
+			sizeof(ctrl_23->data));
+		if (retval < 0)
+			return -EINVAL;		
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl23_base_addr,
+			ctrl_23->data,
+			sizeof(ctrl_23->data));
+		if (retval < 0)
+			return -EINVAL;	
+			
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s enable glove =0x%x, ctrl23 data[0] = 0x%x\n", 
+				__func__, ctrl_23->gloved_finger_enable, ctrl_23->data[0]);
+                
+		if(cover_mode == 1) {
+			ctrl_10->min_peak_amp = 0x0A;
+		}
+		else {
+			ctrl_10->min_peak_amp = 0x0C;
+		}
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s enable glove, min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+	}
+	else {
+	//disable glove mode
+		printk("%s not into glove mode\n", __func__);
+		if (rmi4_data->usb_status == 1) {
+			if(cap_sel_status == 0) { //<ASUS_focal+>
+				printk("[cap] golve=0 usb=1 init\n");
+				cap_sensor_usb_init(rmi4_data);
+			}
+		}
+		else {
+			if(cap_sel_status == 0) { //<ASUS_focal+>
+				printk("[cap] golve=0 usb=0 init\n");
+				cap_sensor_reg_init(rmi4_data);
+			}
+		}
+
+		//<ASUS_focal+>
+		if(cap_sel_status == 1) {
+			cap_buf[0] = 0xc0;
+			cap_buf[1] = 0x00;
+			retval = cap_i2c_write(rmi4_data, cap_buf, 2);
+			if(retval < 0)
+				printk("%s [fts] retval = %d glove mode write failure.\n", __func__, retval);
+		}
+		//<ASUS_focal->
+
+		ctrl_23->gloved_finger_enable &= 0x00;		
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl23_base_addr,
+			ctrl_23->data,
+			sizeof(ctrl_23->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl23_base_addr,
+			ctrl_23->data,
+			sizeof(ctrl_23->data));
+		if (retval < 0)
+			return -EINVAL;	
+		
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s disable glove =0x%x, ctrl23 data[0] = 0x%x\n", __func__, ctrl_23->gloved_finger_enable, ctrl_23->data[0]);
+
+		if(cover_mode == 1) {
+			ctrl_10->min_peak_amp = 0x0F;
+		}
+		else {
+			ctrl_10->min_peak_amp = 0x14;
+		}
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f12_ctrl10_base_addr,
+			ctrl_10->data,
+			sizeof(ctrl_10->data));
+		if (retval < 0)
+			return -EINVAL;
+		
+		dev_dbg(rmi4_data->pdev->dev.parent,
+				"%s disable glove, min peak = 0x%x, ctrl_10->data[1]=0x%x\n", __func__, ctrl_10->min_peak_amp, ctrl_10->data[1]);
+	}
+	
+exit:
+	kfree(ctrl_10);
+	kfree(ctrl_23);
+	
+	return retval;
+}
+//<ASUS_Glove->
+//<ASUS_cap_sensor+>
+static ssize_t synaptics_rmi4_cap_sensor_show(struct device *dev,
+struct device_attribute *attr, char *buf)
+{
+	/* place holder for future use */
+	return -EPERM;
+}
+
+static ssize_t synaptics_rmi4_cap_sensor_store(struct device *dev,
+struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);	
+	ssize_t num_read_chars = 0;
+	int retval;
+	//u32 wmreg=0;
+	long unsigned int wmreg=0;
+	u8 buf_val[8]={0};
+	u8 regaddr=0xff,regvalue=0xff;
+	u8 valbuf[5]={0};
+	memset(valbuf, 0, sizeof(valbuf));
+
+	mutex_lock(&(rmi4_data->cap_mutex));
+	num_read_chars = count - 1;
+
+	if(num_read_chars!=2)
+	{
+		if(num_read_chars!=4)
+		{
+			dev_err(dev, "please input 2 or 4 character\n");
+			goto error_return;
+		}
+	}
+
+	memcpy(valbuf, buf, num_read_chars);
+	retval = kstrtoul(valbuf, 16, &wmreg);
+	if (0 != retval)
+	{
+		dev_err(dev, "%s() - ERROR: Could not convert the given input to a number. The given input was: \"%s\"\n", __FUNCTION__, buf);
+		goto error_return;
+	}
+
+	if(2 == num_read_chars)
+	{
+		//read register
+		regaddr = wmreg;
+		if(cap_i2c_Read(rmi4_data, &regaddr, 1, &regvalue, 1) < 0)
+			dev_err(dev, "Could not read the register(0x%02x)\n", regaddr);
+		else
+			printk("[cap] the register(0x%02x) is 0x%02x\n", regaddr, regvalue);
+	}
+	else
+	{
+		regaddr = wmreg>>8;
+		regvalue = wmreg;
+		buf_val[0] = regaddr;
+		buf_val[1] = regvalue;
+		if(cap_i2c_write(rmi4_data, buf_val, 2) < 0)
+			dev_err(dev, "Could not write the register(0x%02x)\n", regaddr);
+		else
+			printk("[cap] Write 0x%02x into register(0x%02x) successful\n", regvalue, regaddr);
+	}
+error_return:
+	mutex_unlock(&(rmi4_data->cap_mutex));
+
+	return count;
+}
+
+static ssize_t synaptics_rmi4_cap1_status_show(struct device *dev,
+struct device_attribute *attr, char *buf) {
+    //<ASUS_focal+>
+	int local_back;
+    if(cap_sel_status == 1) {
+        local_back = fts_btn_back;
+        printk("%s [FTS] back=%d\n", __func__, fts_btn_back);
+    }else if(cap_sel_status == 0){
+        local_back = btn_back;        
+        printk("%s [cap] back=%d\n", __func__, btn_back);
+    }
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			local_back);
+    //<ASUS_focal->
+}
+
+static ssize_t synaptics_rmi4_cap2_status_show(struct device *dev,
+struct device_attribute *attr, char *buf) {
+    //<ASUS_focal+>
+	int local_home;
+    if(cap_sel_status == 1) {
+        local_home = fts_btn_home;
+        printk("%s [FTS] home=%d\n", __func__, fts_btn_home);
+    }else if(cap_sel_status == 0){
+        local_home = btn_home;        
+        printk("%s [cap] home=%d\n", __func__, btn_home);
+    }    
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			local_home);
+    //<ASUS_focal->
+}
+
+static ssize_t synaptics_rmi4_cap3_status_show(struct device *dev,
+struct device_attribute *attr, char *buf) {
+    //<ASUS_focal+>
+	int local_menu;
+    if(cap_sel_status == 1) {
+        local_menu = fts_btn_menu;
+        printk("%s [FTS] menu=%d\n", __func__, fts_btn_menu);
+    }else if(cap_sel_status == 0){
+        local_menu = btn_menu;        
+        printk("%s [cap] menu=%d\n", __func__, btn_menu);
+    }    
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			local_menu);
+    //<ASUS_focal->
+}
+//<ASUS_cap_sensor->
+
+//<ASUS_DTP+>
+static ssize_t synaptics_rmi4_dclick_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			dclick_mode);
+}
+
+static ssize_t synaptics_rmi4_dclick_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+	
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+		
+	dclick_mode = input;
+	printk("[synaptics] dclick mode: %d\n", dclick_mode);
+
+	return count;
+}
+//<ASUS_DTP->
+//<ASUS_SWIPE+>
+static ssize_t synaptics_rmi4_swipe_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			swipe_mode);
+}
+
+static ssize_t synaptics_rmi4_swipe_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+	
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+		
+	swipe_mode = input;
+	printk("[synaptics] swipe mode: %d\n", swipe_mode);
+
+	return count;
+}
+//<ASUS_SWIPE->
+//<ASUS_Gesture+>
+static ssize_t synaptics_rmi4_gesture_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			gesture_mode);
+}
+
+static ssize_t synaptics_rmi4_gesture_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	char input[7] = {0};
+	int value=0, i;
+	
+	if (sscanf(buf, "%s", input) != 1)
+		return -EINVAL;
+
+	for (i=0;i<7;i++)
+	{
+		value += (((int)input[i])-48)<<(6-i);
+	}
+	gesture_mode = value;
+	printk("[synaptics] gesture mode: %d\n", gesture_mode);
+
+	return count;
+}
+//<ASUS_Gesture->
+
+//<ASUS_Glove+>
+static ssize_t synaptics_rmi4_glove_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			glove_mode);
+}
+
+static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;	
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+	
+	
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+		
+	glove_mode = input;
+	printk("[synaptics] glove_mode: %d\n", glove_mode);
+		
+	if(!fw_update_state)
+		synaptics_rmi4_set_glove_param(rmi4_data);
+	
+	return count;
+}
+//<ASUS_Glove->
+
+//<ASUS_COVER+>
+static ssize_t synaptics_rmi4_cover_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			cover_mode);
+}
+
+static ssize_t synaptics_rmi4_cover_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+	
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+	
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+		
+	cover_mode = input;
+	printk("[synaptics] cover_mode: %d\n", cover_mode);
+		
+	if(!fw_update_state && screen_flag == 1)
+		synaptics_rmi4_set_cover_param(rmi4_data);
+	printk("screen_flag = %d\n",screen_flag);
+	
+	return count;
+}
+//<ASUS_COVER->
+
+//<ASUS_focal+>
+#define FTS_CFG_FILEPATH "/data/"
+static int fts_ReadFirmware(char *firmware_name,unsigned char *firmware_buf)
+{
+	struct file *pfile = NULL;
+	struct inode *inode;
+	unsigned long magic;
+	off_t fsize;
+	char filepath[128];
+	loff_t pos;
+	mm_segment_t old_fs;
+
+	memset(filepath, 0, sizeof(filepath));
+	sprintf(filepath, "%s%s", FTS_CFG_FILEPATH, firmware_name);
+    printk("%s [fts] filepath = %s\n" ,__func__, filepath);
+	if (NULL == pfile)
+	{
+		pfile = filp_open(filepath, O_RDONLY, 0);
+	}
+	if (IS_ERR(pfile)) 
+	{
+		pr_err("error occured while opening file %s.\n", filepath);
+		return -EIO;
+	}
+	inode = pfile->f_dentry->d_inode;
+	magic = inode->i_sb->s_magic;
+	fsize = inode->i_size;
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	pos = 0;
+	vfs_read(pfile, firmware_buf, fsize, &pos);
+	filp_close(pfile, NULL);
+	set_fs(old_fs);
+	return 0;
+}
+
+static int fts_GetFirmwareSize(char *firmware_name)
+{
+	struct file *pfile = NULL;
+	struct inode *inode;
+	unsigned long magic;
+	off_t fsize = 0;
+	char filepath[128];
+
+	memset(filepath, 0, sizeof(filepath)); 
+    sprintf(filepath, "%s%s", FTS_CFG_FILEPATH, firmware_name);
+    printk("%s [fts] filepath = %s\n" ,__func__, filepath);
+	if (NULL == pfile)
+	{
+		pfile = filp_open(filepath, O_RDONLY, 0);
+	}
+	if (IS_ERR(pfile)) 
+	{
+		pr_err("error occured while opening file %s.\n", filepath);
+		return -EIO;
+	}
+	inode = pfile->f_dentry->d_inode;
+	magic = inode->i_sb->s_magic;
+	fsize = inode->i_size;
+	filp_close(pfile, NULL);
+	return fsize;
+}
+
+static ssize_t fts_fwupgradeapp_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	char fwname[128];
+    u8 *pbt_buf = NULL;
+    int i_ret = 0;    
+	//struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+    struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+    int fwsize;
+    printk("%s [fts] start\n", __func__);
+	memset(fwname, 0, sizeof(fwname));
+	sprintf(fwname, "%s", buf);
+	fwname[count-1] = '\0';
+
+    fwsize = fts_GetFirmwareSize(fwname);
+    printk("%s [fts] fw name = %s\n", __func__, fwname);
+    if (fwsize <= 0) 
+	{
+		printk("%s ERROR:Get firmware size failed\n",__func__);
+		return -EIO;
+	}    
+	
+	disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+    pbt_buf = (unsigned char *)kmalloc(fwsize + 1, GFP_KERNEL);
+	if (fts_ReadFirmware(fwname, pbt_buf)) 
+	{
+        printk("%s() - ERROR: request_firmware failed\n",__func__);
+		kfree(pbt_buf);
+		return -EIO;        
+    }
+    i_ret = fts_6336GU_ctpm_fw_upgrade(rmi4_data, pbt_buf, fwsize);
+    if (i_ret != 0)
+		printk("%s() - ERROR:[FTS] upgrade failed..\n",
+					__func__);
+                    
+	enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+    kfree(pbt_buf);
+	return count;
+}
+
+int FTS_I2c_Read(unsigned char *wBuf, int wLen, unsigned char *rBuf, int rLen)
+{
+	return cap_i2c_Read(gb_rmi4_data, wBuf, wLen, rBuf, rLen);
+}
+
+int FTS_I2c_Write(unsigned char *wBuf, int wLen)
+{
+	return cap_i2c_write(gb_rmi4_data, wBuf, wLen);
+}
+
+static int fts_GetInISize(char *config_name)
+{
+	struct file *pfile = NULL;
+	struct inode *inode;
+	unsigned long magic;
+	off_t fsize = 0;
+	char filepath[128];
+
+	memset(filepath, 0, sizeof(filepath));
+	sprintf(filepath, "%s%s", FTS_CFG_FILEPATH, config_name);
+	if (NULL == pfile)
+		pfile = filp_open(filepath, O_RDONLY, 0);
+	if (IS_ERR(pfile)) {
+		pr_err("[FTS][TOUCH_ERR] %s : error occured while opening file %s.\n", __func__, filepath);
+		return -EIO;
+	}
+	inode = pfile->f_dentry->d_inode;
+	magic = inode->i_sb->s_magic;
+	fsize = inode->i_size;
+	filp_close(pfile, NULL);
+	return fsize;
+}
+
+static int fts_ReadInIData(char *config_name, char *config_buf)
+{
+	struct file *pfile = NULL;
+	struct inode *inode;
+	unsigned long magic;
+	off_t fsize;
+	char filepath[128];
+	loff_t pos;
+	mm_segment_t old_fs;
+
+	memset(filepath, 0, sizeof(filepath));
+	sprintf(filepath, "%s%s", FTS_CFG_FILEPATH, config_name);
+	if (NULL == pfile)
+		pfile = filp_open(filepath, O_RDONLY, 0);
+	if (IS_ERR(pfile)) {
+		pr_err("[FTS][TOUCH_ERR] %s : error occured while opening file %s.\n", __func__, filepath);
+		return -EIO;
+	}
+	inode = pfile->f_dentry->d_inode;
+	magic = inode->i_sb->s_magic;
+	fsize = inode->i_size;
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	pos = 0;
+	vfs_read(pfile, config_buf, fsize, &pos);
+	filp_close(pfile, NULL);
+	set_fs(old_fs);
+	return 0;
+}
+
+static int fts_get_testparam_from_ini(char *config_name)
+{
+	char *config_data = NULL;
+	int file_size;
+
+	file_size = fts_GetInISize(config_name);
+
+	pr_err("[FTS][Touch] %s : inisize = %d\n ", __func__, file_size);
+	if (file_size <= 0) {
+		pr_err("[FTS][TOUCH_ERR] %s : ERROR : Get firmware size failed\n", __func__);
+		return -EIO;
+	}
+
+	config_data = kmalloc(file_size + 1, GFP_KERNEL);
+
+	if (fts_ReadInIData(config_name, config_data)) {
+		pr_err("[FTS][TOUCH_ERR] %s() - ERROR: request_firmware failed\n", __func__);
+		kfree(config_data);
+		return -EIO;
+	} else {
+		pr_info("[FTS][Touch] %s : fts_ReadInIData successful\n", __func__);
+	}
+
+	set_param_data(config_data);
+
+	return 0;
+}
+
+int selft_test_result = 0;
+static ssize_t fts_ftsselftest_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    if(cap_sel_status == 1) {
+        if (selft_test_result) {
+            printk("[FTS] %s: Selftest FAIL\n", __func__);
+        } else {
+            printk("[FTS] %s : Selftest PASS\n", __func__);
+        }
+        return sprintf(buf, "[FTS] : Selftest %s\n", selft_test_result ? "FAIL" : "PASS");
+    }else {
+        return sprintf(buf, "[cap] Is not focal chip\n");
+    }	
+}
+
+static mm_segment_t oldfs;
+
+static struct file *fts_selftest_file_open(void)
+{
+
+	struct file *filp = NULL;
+	char filepath[128];
+	int err = 0;
+
+	memset(filepath, 0, sizeof(filepath));
+	sprintf(filepath, "%s%s", FTS_CFG_FILEPATH, "test_result.csv");
+
+	oldfs = get_fs();
+	set_fs(get_ds());
+
+	filp = filp_open(filepath, O_WRONLY|O_CREAT, 0644);
+	if (IS_ERR(filp)) {
+		err = PTR_ERR(filp);
+		return NULL;
+	}
+
+	return filp;
+}
+
+int fts_selftest_file_write(struct file *file, unsigned char *data, int len)
+{
+
+	int ret;
+
+	ret = file->f_op->write(file, data, len, &file->f_pos);
+
+	return ret;
+}
+
+void fts_selftest_file_close(struct file *file)
+{
+
+	set_fs(oldfs);
+	filp_close(file, NULL);
+}
+
+static void fts_sw_reset(struct synaptics_rmi4_data *rmi4_data)
+{
+    int i;
+    u8 auc_i2c_write_buf[10];
+    u8 buf[2] = {0};
+    u8 reg_val[2] = {0};
+    
+    printk("[Touch] %s start\n", __func__);
+    for(i =0;i<5;i++) {
+        /*********Step 1:Reset  CTPM *****/
+        buf[0] = FTS_RST_CMD_REG2;
+        buf[1] = FTS_UPGRADE_AA;
+        cap_i2c_write(rmi4_data, buf, 2);
+        msleep(FTS_DELAY_TIME_AA);
+        
+        buf[0] = FTS_RST_CMD_REG2;
+        buf[1] = FTS_UPGRADE_55;
+        cap_i2c_write(rmi4_data, buf, 2);
+        msleep(FTS_DELAY_TIME_55);
+        /*********Step 2:Enter upgrade mode *****/
+        auc_i2c_write_buf[0] = FTS_UPGRADE_55;
+        cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+        auc_i2c_write_buf[0] = FTS_UPGRADE_AA;
+        cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+        msleep(10);    
+        
+        /*********Step 3:check READ-ID***********************/		
+		auc_i2c_write_buf[0] = FTS_READ_ID_REG;
+		auc_i2c_write_buf[1] = auc_i2c_write_buf[2] = auc_i2c_write_buf[3] =0x00;
+		reg_val[0] = 0x00;
+		reg_val[1] = 0x00;
+		cap_i2c_Read(rmi4_data, auc_i2c_write_buf, 4, reg_val, 2);
+
+		if (reg_val[0] == FTS_UPGRADE_ID_1
+			&& reg_val[1] == FTS_UPGRADE_ID_2) 
+		{
+			printk("%s [FTS] : GET CTPM ID OK,ID1 = 0x%x,ID2 = 0x%x\n",
+				__func__, reg_val[0], reg_val[1]);
+			break;
+		} 
+		else 
+		{
+			printk("%s [FTS] : GET CTPM ID FAIL,ID1 = 0x%x,ID2 = 0x%x\n",
+				__func__, reg_val[0], reg_val[1]);
+		}
+    }
+    
+    /*********Step 7: reset the new FW***********************/
+	auc_i2c_write_buf[0] = 0x07;
+	cap_i2c_write(rmi4_data, auc_i2c_write_buf, 1);
+	msleep(150);
+	printk("[Touch] %s end\n", __func__);
+}
+
+static ssize_t fts_fts_sw_reset_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+    struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+    ssize_t num_read_chars = 0;
+    
+    num_read_chars = count - 1;
+    
+    if(1 == num_read_chars) {
+        printk("%s [fts] excution sw reset\n", __func__);
+        fts_sw_reset(rmi4_data);
+    }
+    
+    return count;
+}
+
+static ssize_t fts_ftsselftest_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	//struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+    struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+	char config_file[128], result_buf[64];
+	char *w_buf;
+	struct file *w_file;
+	int w_len;
+
+	//mutex_lock(&g_device_mutex);
+    if(cap_sel_status == 1) {
+        disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+
+        selft_test_result = 0;
+
+        memset(config_file, 0, sizeof(config_file));
+        sprintf(config_file, "%s", buf);
+        config_file[count-1] = '\0';
+        
+        if (fts_get_testparam_from_ini(config_file) < 0) {
+        }        
+
+        if (fts_get_testparam_from_ini(config_file) < 0) {
+            printk("[FTS][TOUCH_ERR] %s : get testparam from ini failure\n", __func__);
+        } else {
+            printk("[FTS][Touch] %s : tp test Start...\n", __func__);
+
+            if (start_test_tp()) {
+                printk("[FTS][Touch] %s : tp test pass\n", __func__);
+                selft_test_result = 0;
+            } else {
+                printk("[FTS][Touch] %s : tp test failure\n", __func__);
+                selft_test_result = 1;
+            }
+
+            /*for (i = 0; i < 3; i++) {
+                if (cap_i2c_write(rmi4_data, 0x00, 1) >= 0)
+                    break;
+                else
+                    msleep(200);
+            }*/
+
+            w_file = fts_selftest_file_open();
+            if (!w_file)
+                printk("[FTS][Touch] %s : Open log file fail !\n", __func__);
+            else{
+                w_buf =kmalloc(1024*80,  GFP_KERNEL);
+                if (!w_buf)
+                    printk("[FTS][Touch] %s : allocate memory fail !\n", __func__);
+                else{
+                    w_len = get_test_data(w_buf);
+                    fts_selftest_file_write(w_file, w_buf, w_len);
+                    w_len = sprintf(result_buf, "[FTS] : Selftest %s\n", selft_test_result ? "FAIL" : "PASS");
+                    fts_selftest_file_write(w_file, result_buf, w_len);
+
+                    kfree(w_buf);
+                }
+                fts_selftest_file_close(w_file);
+                FreeStoreAllData();
+            }
+
+            free_test_param_data();
+        }
+        fts_sw_reset(rmi4_data);
+        enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+        //mutex_unlock(&g_device_mutex);
+        
+    }else if(cap_sel_status == 0) {
+        printk("%s [cap] Is not focal chip\n", __func__);
+    }
+    return count;
+}
+
+static ssize_t cap_chip_select_show(struct device *dev,	struct device_attribute *attr, char *buf)
+{
+    if (cap_sel_status == 0) {
+		printk("%s [cap]: micro chip\n", __func__);
+	} else if(cap_sel_status == 1){
+		printk("%s [cap][FTS]: focal chip\n", __func__);
+	}
+
+	return sprintf(buf, "%d\n", cap_sel_status);
+}
+
+static ssize_t fts_fw_version_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+    struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+    unsigned char addr=0x00;
+    unsigned char buf_val=0x00;
+    
+    addr = 0xa6;
+    cap_i2c_Read(rmi4_data, &addr, 1, &buf_val, 1);
+    printk("%s [FTS] focal cap fw version = 0x%02x\n", __func__, buf_val);
+    
+    return sprintf(buf, "[FTS] focal cap fw version = 0x%02x\n", buf_val);
+}
+//<ASUS_focal->
+
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+	{
+	char *str;
+	int len, retval;
+
+	if (touch_proximity_at_phone == 1) {		//No Touch
+		printk("[Synaptics] Touch is disabled now\n");
+		str = "Touch is disabled now\n";
+	} else if (touch_proximity_at_phone == 0) {	//Touch
+		printk("[Synaptics] Touch is enabled now\n");
+		str = "Touch is enabled now\n";
+	}
+
+	len = strlen(str);
+	if(copy_to_user(buf, str, len))
+		retval = -EFAULT;
+	else if (*ppos == 0)
+ 		*ppos += len;
+	else
+		len = 0;
+	return len;
+}
+static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+	char str[128];
+	if (count > PAGE_SIZE) //procfs write and read has PAGE_SIZE limit
+		count = 128;
+
+    if (copy_from_user(str, buf, count))
+	{
+		printk("copy_from_user failed!\n");
+		return -EFAULT;
+        }
+
+	if (count > 1)
+	{
+		str[count-1] = '\0';
+	}
+
+	if ((int)(str[0]) == (1+48)) {		//No Touch
+		touch_proximity_at_phone = 1;
+		printk("[Synaptics] Disable Touch\n");
+	} else {				//Touch
+		touch_proximity_at_phone = 0;
+		printk("[Synaptics] Enable Touch\n");
+	}
+
+	return count;
+}
+#else
+static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request,
+				     int *eof, void *data)
+{
+	if (touch_proximity_at_phone == 1) {		//No Touch
+		printk("[Synaptics] Touch is disabled now\n");
+		return sprintf(buf, "Touch is disabled now\n");
+	} else if (touch_proximity_at_phone == 0) {	//Touch
+		printk("[Synaptics] Touch is enabled now\n");
+		return sprintf(buf, "Touch is enabled now\n");
+	}
+
+	return 0;
+}
+static int tp_proximity_proc_write(struct file *file, const char *buffer,
+				      unsigned long count, void *data)
+{
+        //struct device_private *dpp = container_of(data, struct device_private, driver_data);
+	//struct device *dev = container_of(dpp, struct device, p);
+
+	if ((int)(*buffer) == (1+48)) {		//No Touch
+		touch_proximity_at_phone = 1;
+		printk("[Synaptics] Disable Touch\n");
+	} else {				//Touch
+		touch_proximity_at_phone = 0;
+		printk("[Synaptics] Enable Touch\n");
+	}
+
+	return count;
+}
+#endif
+#endif
+//<ASUS_Proximity->
+
+static int synaptics_rmi4_debug_suspend_set(void *_data, u64 val)
+{
+	struct synaptics_rmi4_data *rmi4_data = _data;
+
+	if (val)
+		synaptics_rmi4_suspend(&rmi4_data->input_dev->dev);
+	else
+		synaptics_rmi4_resume(&rmi4_data->input_dev->dev);
+
+	return 0;
+}
+
+static int synaptics_rmi4_debug_suspend_get(void *_data, u64 *val)
+{
+	struct synaptics_rmi4_data *rmi4_data = _data;
+
+	*val = rmi4_data->suspend;
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(debug_suspend_fops, synaptics_rmi4_debug_suspend_get,
+			synaptics_rmi4_debug_suspend_set, "%lld\n");
 
 static struct kobj_attribute virtual_key_map_attr = {
 	.attr = {
@@ -647,205 +2204,6 @@ static struct kobj_attribute virtual_key_map_attr = {
 	},
 	.show = synaptics_rmi4_virtual_key_map_show,
 };
-
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-static void synaptics_secure_touch_init(struct synaptics_rmi4_data *data)
-{
-	data->st_initialized = 0;
-	init_completion(&data->st_powerdown);
-	init_completion(&data->st_irq_processed);
-
-	/* Get clocks */
-	data->core_clk = devm_clk_get(data->pdev->dev.parent, "core_clk");
-	if (IS_ERR(data->core_clk)) {
-		dev_warn(data->pdev->dev.parent,
-			"%s: error on clk_get(core_clk): %ld\n", __func__,
-			PTR_ERR(data->core_clk));
-		data->core_clk = NULL;
-	}
-
-	data->iface_clk = devm_clk_get(data->pdev->dev.parent, "iface_clk");
-	if (IS_ERR(data->iface_clk)) {
-		dev_warn(data->pdev->dev.parent,
-			"%s: error on clk_get(iface_clk): %ld\n", __func__,
-			PTR_ERR(data->iface_clk));
-		data->iface_clk = NULL;
-	}
-
-	data->st_initialized = 1;
-}
-
-static void synaptics_secure_touch_notify(struct synaptics_rmi4_data *rmi4_data)
-{
-	sysfs_notify(&rmi4_data->input_dev->dev.kobj, NULL, "secure_touch");
-}
-
-static irqreturn_t synaptics_filter_interrupt(
-	struct synaptics_rmi4_data *rmi4_data)
-{
-	if (atomic_read(&rmi4_data->st_enabled)) {
-		if (atomic_cmpxchg(&rmi4_data->st_pending_irqs, 0, 1) == 0) {
-			reinit_completion(&rmi4_data->st_irq_processed);
-			synaptics_secure_touch_notify(rmi4_data);
-			wait_for_completion_interruptible(
-				&rmi4_data->st_irq_processed);
-		}
-		return IRQ_HANDLED;
-	}
-	return IRQ_NONE;
-}
-
-/*
- * 'blocking' variable will have value 'true' when we want to prevent the driver
- * from accessing the xPU/SMMU protected HW resources while the session is
- * active.
- */
-static void synaptics_secure_touch_stop(struct synaptics_rmi4_data *rmi4_data,
-					bool blocking)
-{
-	if (atomic_read(&rmi4_data->st_enabled)) {
-		atomic_set(&rmi4_data->st_pending_irqs, -1);
-		synaptics_secure_touch_notify(rmi4_data);
-		if (blocking)
-			wait_for_completion_interruptible(
-				&rmi4_data->st_powerdown);
-	}
-}
-
-#else
-static void synaptics_secure_touch_init(struct synaptics_rmi4_data *rmi4_data)
-{
-}
-
-static irqreturn_t synaptics_filter_interrupt(
-				struct synaptics_rmi4_data *rmi4_data)
-{
-	return IRQ_NONE;
-}
-
-static void synaptics_secure_touch_stop(struct synaptics_rmi4_data *rmi4_data,
-					bool blocking)
-{
-}
-#endif
-
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX_V26)
-static ssize_t synaptics_rmi4_secure_touch_enable_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-
-	return scnprintf(buf, PAGE_SIZE, "%d",
-			atomic_read(&rmi4_data->st_enabled));
-}
-/*
- * Accept only "0" and "1" valid values.
- * "0" will reset the st_enabled flag, then wake up the reading process and
- * the interrupt handler.
- * The bus driver is notified via pm_runtime that it is not required to stay
- * awake anymore.
- * It will also make sure the queue of events is emptied in the controller,
- * in case a touch happened in between the secure touch being disabled and
- * the local ISR being ungated.
- * "1" will set the st_enabled flag and clear the st_pending_irqs flag.
- * The bus driver is requested via pm_runtime to stay awake.
- */
-static ssize_t synaptics_rmi4_secure_touch_enable_store(struct device *dev,
-				    struct device_attribute *attr,
-				    const char *buf, size_t count)
-{
-	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-	unsigned long value;
-	int err = 0;
-
-	if (count > 2)
-		return -EINVAL;
-
-	err = kstrtoul(buf, 10, &value);
-	if (err != 0)
-		return err;
-
-	if (!rmi4_data->st_initialized)
-		return -EIO;
-
-	err = count;
-
-	switch (value) {
-	case 0:
-		if (atomic_read(&rmi4_data->st_enabled) == 0)
-			break;
-
-		synaptics_rmi4_bus_put(rmi4_data);
-		atomic_set(&rmi4_data->st_enabled, 0);
-		synaptics_secure_touch_notify(rmi4_data);
-		complete(&rmi4_data->st_irq_processed);
-		synaptics_rmi4_irq(rmi4_data->irq, rmi4_data);
-		complete(&rmi4_data->st_powerdown);
-
-		break;
-	case 1:
-		if (atomic_read(&rmi4_data->st_enabled)) {
-			err = -EBUSY;
-			break;
-		}
-
-		synchronize_irq(rmi4_data->irq);
-
-		if (synaptics_rmi4_bus_get(rmi4_data) < 0) {
-			dev_err(
-				rmi4_data->pdev->dev.parent,
-				"synaptics_rmi4_bus_get failed\n");
-			err = -EIO;
-			break;
-		}
-		reinit_completion(&rmi4_data->st_powerdown);
-		reinit_completion(&rmi4_data->st_irq_processed);
-		atomic_set(&rmi4_data->st_enabled, 1);
-		atomic_set(&rmi4_data->st_pending_irqs,  0);
-		break;
-	default:
-		dev_err(
-			rmi4_data->pdev->dev.parent,
-			"unsupported value: %lu\n", value);
-		err = -EINVAL;
-		break;
-	}
-	return err;
-}
-
-/*
- * This function returns whether there are pending interrupts, or
- * other error conditions that need to be signaled to the userspace library,
- * according tot he following logic:
- * - st_enabled is 0 if secure touch is not enabled, returning -EBADF
- * - st_pending_irqs is -1 to signal that secure touch is in being stopped,
- *   returning -EINVAL
- * - st_pending_irqs is 1 to signal that there is a pending irq, returning
- *   the value "1" to the sysfs read operation
- * - st_pending_irqs is 0 (only remaining case left) if the pending interrupt
- *   has been processed, so the interrupt handler can be allowed to continue.
- */
-static ssize_t synaptics_rmi4_secure_touch_show(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-	int val = 0;
-
-	if (atomic_read(&rmi4_data->st_enabled) == 0)
-		return -EBADF;
-
-	if (atomic_cmpxchg(&rmi4_data->st_pending_irqs, -1, 0) == -1)
-		return -EINVAL;
-
-	if (atomic_cmpxchg(&rmi4_data->st_pending_irqs, 1, 0) == 1)
-		val = 1;
-	else
-		complete(&rmi4_data->st_irq_processed);
-
-	return scnprintf(buf, PAGE_SIZE, "%u", val);
-
-}
-#endif
 
 static ssize_t synaptics_rmi4_f01_reset_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
@@ -886,8 +2244,8 @@ static ssize_t synaptics_rmi4_f01_buildid_show(struct device *dev,
 {
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-			rmi4_data->firmware_id);
+	return snprintf(buf, PAGE_SIZE, "%u_%x\n",
+			rmi4_data->firmware_id, rmi4_data->config_id); //<ASUS_buildid+>
 }
 
 static ssize_t synaptics_rmi4_f01_flashprog_show(struct device *dev,
@@ -1084,9 +2442,9 @@ static int synaptics_rmi4_f11_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			return 0;
 
 		if (detected_gestures) {
-			input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 1);
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 1);
 			input_sync(rmi4_data->input_dev);
-			input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 0);
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 0);
 			input_sync(rmi4_data->input_dev);
 			rmi4_data->suspend = false;
 		}
@@ -1173,7 +2531,12 @@ static int synaptics_rmi4_f11_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #endif
 
 			dev_dbg(rmi4_data->pdev->dev.parent,
-					"%s: Finger %d: status = 0x%02x, x = %d, y = %d, wx = %d, wy = %d\n",
+					"%s: Finger %d: "
+					"status = 0x%02x, "
+					"x = %d, "
+					"y = %d, "
+					"wx = %d, "
+					"wy = %d\n",
 					__func__, finger,
 					finger_status,
 					x, y, wx, wy);
@@ -1200,6 +2563,87 @@ exit:
 	return touch_count;
 }
 
+#ifdef WAKEUP_GESTURE
+static void synaptics_check_gesture(struct synaptics_rmi4_data *rmi4_data, unsigned char gesture_type, unsigned char gesture_alphabet)
+{		
+	switch(gesture_type) {
+			case GESTURE_DOUBLECLICK:
+				if (dclick_mode == 1) {
+					printk("%s double click wake up\n", __func__);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_DCLICK, 1);
+					input_sync(rmi4_data->input_dev);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_DCLICK, 0);
+					input_sync(rmi4_data->input_dev);	
+				}
+				break;
+			case GESTURE_SWIPE:
+				if (swipe_mode == 1) {
+					printk("%s swipe wake up\n", __func__);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_SWIPE_UP, 1);
+					input_sync(rmi4_data->input_dev);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_SWIPE_UP, 0);
+					input_sync(rmi4_data->input_dev);
+				}
+				break;
+			case GESTURE_VEE_REG:
+				if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x01) && (gesture_alphabet == 0x02)) {
+					printk("%s gesture v wake up\n", __func__);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_V, 1);
+					input_sync(rmi4_data->input_dev);
+					input_report_key(rmi4_data->input_dev, KEY_GESTURE_V, 0);
+					input_sync(rmi4_data->input_dev);
+				}
+				break;
+			case GESTURE_OTHERS:
+				if (gesture_alphabet == GESTURE_E) {
+					if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x08)) {
+						printk("%s gesture e wake up\n", __func__);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_E, 1);
+						input_sync(rmi4_data->input_dev);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_E, 0);
+						input_sync(rmi4_data->input_dev);
+					}
+				}else if (gesture_alphabet == GESTURE_C) {
+					if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x04)) {
+						printk("%s gesture c wake up\n", __func__);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_C, 1);
+						input_sync(rmi4_data->input_dev);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_C, 0);
+						input_sync(rmi4_data->input_dev);
+					}
+				}else if (gesture_alphabet == GESTURE_W) {
+					if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x20)) {
+						printk("%s gesture w wake up\n", __func__);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_W, 1);
+						input_sync(rmi4_data->input_dev);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_W, 0);
+						input_sync(rmi4_data->input_dev);
+					}
+				}else if (gesture_alphabet == GESTURE_S) {
+					if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x10)) {
+						printk("%s gesture s wake up\n", __func__);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_S, 1);
+						input_sync(rmi4_data->input_dev);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_S, 0);
+						input_sync(rmi4_data->input_dev);
+					}
+				}else if (gesture_alphabet == GESTURE_Z) {
+					if ((gesture_mode & GESTURE_SWITCH) && (gesture_mode & 0x02)) {
+						printk("%s gesture z wake up\n", __func__);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_Z, 1);
+						input_sync(rmi4_data->input_dev);
+						input_report_key(rmi4_data->input_dev, KEY_GESTURE_Z, 0);
+						input_sync(rmi4_data->input_dev);
+					}
+				}
+				break;
+			default:
+				printk("%s gesture can't parse gesture type =0x%02x\n gesture gesture_alphabet =0x%02x", __func__, gesture_alphabet, gesture_alphabet);
+				break;
+		}		
+}
+#endif
+
 static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		struct synaptics_rmi4_fn *fhandler)
 {
@@ -1212,6 +2656,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 	unsigned char size_of_2d_data;
 	unsigned char gesture_type;
 	unsigned short data_addr;
+#ifdef WAKEUP_GESTURE
+	unsigned char gesture_alphabet;
+#endif
 	int x;
 	int y;
 	int wx;
@@ -1241,16 +2688,18 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 				sizeof(rmi4_data->gesture_detection));
 		if (retval < 0)
 			return 0;
-
 		gesture_type = rmi4_data->gesture_detection[0];
-
+		gesture_alphabet = rmi4_data->gesture_detection[2];
+		
+		synaptics_check_gesture(rmi4_data, gesture_type, gesture_alphabet);
+		/* //synaptics original code double tap
 		if (gesture_type && gesture_type != F12_UDG_DETECT) {
-			input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 1);
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 1);
 			input_sync(rmi4_data->input_dev);
-			input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 0);
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 0);
 			input_sync(rmi4_data->input_dev);
 			rmi4_data->suspend = false;
-		}
+		}*/
 
 		return 0;
 	}
@@ -1323,6 +2772,17 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		finger_data = data + finger;
 		finger_status = finger_data->object_type_and_status;
 
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+		if (touch_proximity_at_phone == 1) {
+#ifdef TYPE_B_PROTOCOL
+			input_mt_slot(rmi4_data->input_dev, finger);
+			input_mt_report_slot_state(rmi4_data->input_dev,
+			MT_TOOL_FINGER, 0);
+#endif		
+		} else {
+#endif
+//<ASUS_Proximity->
 #ifdef F12_DATA_15_WORKAROUND
 		objects_already_present = finger + 1;
 #endif
@@ -1348,11 +2808,19 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		if (rmi4_data->hw_if->board_data->y_flip)
 			y = rmi4_data->sensor_max_y - y;
 
+        //<ASUS_COVER+>
+        if(cover_mode == 1 && ((y >= 940 && y <=1919) || (y >= 0 && y <=20))) {
+            input_mt_slot(rmi4_data->input_dev, finger);
+			input_mt_report_slot_state(rmi4_data->input_dev,
+					MT_TOOL_FINGER, 0);
+            
+        }else {
+        //<ASUS_COVER->
+
 		switch (finger_status) {
 		case F12_FINGER_STATUS:
 		case F12_GLOVED_FINGER_STATUS:
-			/* Stylus has priority over fingers */
-			if (stylus_presence)
+			if (stylus_presence) /* Stylus has priority over fingers */
 				break;
 #ifdef TYPE_B_PROTOCOL
 			input_mt_slot(rmi4_data->input_dev, finger);
@@ -1393,9 +2861,15 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifndef TYPE_B_PROTOCOL
 			input_mt_sync(rmi4_data->input_dev);
 #endif
+			input_sync(rmi4_data->input_dev);
 
 			dev_dbg(rmi4_data->pdev->dev.parent,
-					"%s: Finger %d: status = 0x%02x, x = %d, y = %d, wx = %d, wy = %d\n",
+					"%s: Finger %d: "
+					"status = 0x%02x, "
+					"x = %d, "
+					"y = %d, "
+					"wx = %d, "
+					"wy = %d\n",
 					__func__, finger,
 					finger_status,
 					x, y, wx, wy);
@@ -1405,16 +2879,17 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			break;
 		case F12_PALM_STATUS:
 			dev_dbg(rmi4_data->pdev->dev.parent,
-					"%s: Finger %d: x = %d, y = %d, wx = %d, wy = %d\n",
+					"%s: Finger %d: "
+					"x = %d, "
+					"y = %d, "
+					"wx = %d, "
+					"wy = %d\n",
 					__func__, finger,
 					x, y, wx, wy);
 			break;
 		case F12_STYLUS_STATUS:
 		case F12_ERASER_STATUS:
-			if (!rmi4_data->stylus_enable)
-				break;
-			/* Stylus has priority over fingers */
-			if (finger_presence) {
+			if (finger_presence) { /* Stylus has priority over fingers */
 				mutex_unlock(&(rmi4_data->rmi4_report_mutex));
 				synaptics_rmi4_free_fingers(rmi4_data);
 				mutex_lock(&(rmi4_data->rmi4_report_mutex));
@@ -1449,7 +2924,13 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 					MT_TOOL_FINGER, 0);
 #endif
 			break;
+            }
+        }//<ASUS_COVER+>
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
 		}
+#endif
+//<ASUS_Proximity->
 	}
 
 	if (touch_count == 0) {
@@ -1464,6 +2945,7 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifndef TYPE_B_PROTOCOL
 		input_mt_sync(rmi4_data->input_dev);
 #endif
+		input_sync(rmi4_data->input_dev);
 
 		if (rmi4_data->stylus_enable) {
 			stylus_presence = 0;
@@ -1478,8 +2960,6 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			input_sync(rmi4_data->stylus_dev);
 		}
 	}
-
-	input_sync(rmi4_data->input_dev);
 
 	mutex_unlock(&(rmi4_data->rmi4_report_mutex));
 
@@ -1639,14 +3119,21 @@ static void synaptics_rmi4_sensor_report(struct synaptics_rmi4_data *rmi4_data,
 	struct synaptics_rmi4_fn *fhandler;
 	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
 	struct synaptics_rmi4_device_info *rmi;
-
+    //unsigned char buf_val[2]={0};
 	rmi = &(rmi4_data->rmi4_mod_info);
-
-	if (rmi4_data->stay_awake) {
-		msleep(30);
-		return;
-	}
-
+    /*
+    if(rmi4_data->suspend && rmi4_data->enable_wakeup_gesture){
+        if(cap_sel_status == 1) {            
+            buf_val[0] = 0xa5;
+            buf_val[1] = 0x00;
+            retval = cap_i2c_write(rmi4_data, buf_val, 2);
+            if(retval < 0){
+                printk("[cap] write reg_addr=0x%02x, retval =%d\n", buf_val[0], retval);
+            }
+            msleep(5);
+        }        
+    }*/
+    
 	/*
 	 * Get interrupt status information from F01 Data1 register to
 	 * determine the source(s) that are flagging the interrupt.
@@ -1684,7 +3171,13 @@ static void synaptics_rmi4_sensor_report(struct synaptics_rmi4_data *rmi4_data,
 		}
 	}
 	if (status.unconfigured && !status.flash_prog) {
-		pr_notice("%s: spontaneous reset detected\n", __func__);
+		//pr_notice("%s: spontaneous reset detected\n", __func__);
+		retval = synaptics_rmi4_reinit_device(rmi4_data);
+		if (retval < 0) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Failed to reinit device\n",
+					__func__);
+		}
 	}
 
 	if (!report)
@@ -1720,14 +3213,661 @@ static void synaptics_rmi4_sensor_report(struct synaptics_rmi4_data *rmi4_data,
 	return;
 }
 
+//<ASUS_cap_sensor+>
+int cap_i2c_Read(struct synaptics_rmi4_data *rmi4_data, char *writebuf,
+	int writelen, char *readbuf, int readlen)
+{
+	int ret;
+	int retry = 0, retrycount = 5;
+	struct i2c_client *i2c = to_i2c_client(rmi4_data->pdev->dev.parent);
+	unsigned char addr = cap_addr; //<ASUS_focal+>
+	mutex_lock(&i2c_rw_access); //<ASUS_focal+>
+	if (writelen > 0) {
+		struct i2c_msg msgs[] = {
+			{
+				.addr = addr,
+				.flags = 0,
+				.len = writelen,
+				.buf = writebuf,
+			},
+			{
+				.addr = addr,
+				.flags = I2C_M_RD,
+				.len = readlen,
+				.buf = readbuf,
+			},
+		};
+		for (retry = 0; retry < retrycount; retry++) {
+			ret = i2c_transfer(i2c->adapter, msgs, 2);
+			if(ret < 0) {
+				printk("[cap] %s: retry=%d, addr=0x%02x\n", __func__, retry, writebuf[0]);
+			}else {
+				break;
+			}
+			msleep(1);
+		}
+	} else {
+		struct i2c_msg msgs[] = {
+			{
+				.addr = addr,
+				.flags = I2C_M_RD,
+				.len = readlen,
+				.buf = readbuf,
+			},
+		};
+		for (retry = 0; retry < retrycount; retry++) {
+			ret = i2c_transfer(i2c->adapter, msgs, 1);
+			if (ret >= 0)
+				break;
+			msleep(1);
+		}
+	}
+    mutex_unlock(&i2c_rw_access);
+	retry=0;
+	return ret;
+}
+
+int cap_i2c_write(struct synaptics_rmi4_data *rmi4_data, unsigned char *writebuf, int writelen)
+{
+	int ret;
+	int retry = 0, retrycount = 5;
+	struct i2c_client *i2c = to_i2c_client(rmi4_data->pdev->dev.parent);
+	unsigned char addr = cap_addr;	//<ASUS_focal+>
+	
+    mutex_lock(&i2c_rw_access); //<ASUS_focal+>
+    
+    if (writelen > 0) {
+        struct i2c_msg msg[] = {
+            {
+                .addr = addr,
+                .flags = 0,
+                .len = writelen,
+                .buf = writebuf,
+            },
+        };
+        
+        for (retry = 0; retry < retrycount; retry++) {
+            ret = i2c_transfer(i2c->adapter, msg, 1);
+            if(ret < 0) {
+                printk("[cap] %s: retry=%d, addr=0x%02x, val=0x%02x\n", __func__, retry, writebuf[0], writebuf[1]);
+            }else {
+                break;
+            }
+            msleep(1);
+        }
+    }
+    mutex_unlock(&i2c_rw_access); //<ASUS_focal+>
+	retry=0;
+	return ret;
+}
+
+#ifdef ASUS_FACTORY_BUILD
+static int pwrkey_mode=1 ;
+static unsigned int caphome_keycode,capmenu_keycode;
+
+static int pwrkeyMode_function(const char *val, struct kernel_param *kp)
+{
+	int ret = 0;
+	int old_val = pwrkey_mode;
+
+	if (ret)
+		return ret;
+
+	if (pwrkey_mode > 0xf) {
+		pwrkey_mode = old_val;
+		return -EINVAL;
+	}
+
+	ret = param_set_int(val, kp);
+
+	if (pwrkey_mode == 1) {
+		caphome_keycode = KEY_HOME;
+		capmenu_keycode = KEY_MENU;
+		printk("[mid_powerbtn] Normal_Mode! \n");
+		printk("[mid_powerbtn] CaphomeKeyCode = %d , CapmenuKeyCode = %d\n", caphome_keycode , capmenu_keycode);
+
+	} else if (pwrkey_mode == 0) {
+		caphome_keycode = KEY_B;
+		capmenu_keycode = KEY_C;
+		printk("[mid_powerbtn] Debug_Mode! \n");
+		printk("[mid_powerbtn] CaphomeKeyCode = %d , CapmenuKeyCode = %d\n", caphome_keycode , capmenu_keycode);
+
+	}
+	return 0;
+}
+
+module_param_call(pwrkey_mode, pwrkeyMode_function, param_get_int, &pwrkey_mode, 0644);
+#endif
+
+static void cap_sensor_report(struct synaptics_rmi4_data *rmi4_data)
+{
+	unsigned char buf_val=0x00;
+	unsigned char cap_read_addr = 0x00;
+	//<ASUS_cap_delta_count+>
+	unsigned char delta_count_addr = 0x00;
+	unsigned char delta_count_addr_2 = 0x00;
+	unsigned char delta_val = 0x00;
+	unsigned char delta_val_2 = 0x00;
+	unsigned char delta_back_LSB = 0x00;
+	unsigned char delta_back_MSB = 0x00;
+	unsigned char delta_home_LSB = 0x00;
+	unsigned char delta_home_MSB = 0x00;
+	unsigned char delta_menu_LSB = 0x00;
+	unsigned char delta_menu_MSB = 0x00;
+	//<ASUS_cap_delta_count->
+	//<ASUS_led+>
+	#ifdef ASUS_FACTORY_BUILD
+	int ret;
+	unsigned long onesec;
+	onesec = msecs_to_jiffies(2000);
+	#endif
+	//<ASUS_led->
+	
+	cap_i2c_Read(rmi4_data, &cap_read_addr, 1, &buf_val, 1);
+	printk("[cap] %s : buf_val=%d\n", __func__, buf_val);
+	if(buf_val == 1) {	
+		printk("[cap] %s : home key press buf_val=%d\n", __func__, buf_val);
+		//<ASUS_cap_delta_count+>
+		delta_count_addr = 0x10;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_val, 1);
+		delta_count_addr_2 = 0x11;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_val_2, 1);
+		printk("[cap]%s : addr=0x%02x%02x, CS1_delta=0x%02x%02x\n", __func__, delta_count_addr, delta_count_addr_2, delta_val, delta_val_2);
+		//<ASUS_cap_delta_count->
+        if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+#ifdef ASUS_FACTORY_BUILD
+		//<ASUS_led+>
+		set_button_backlight(true);
+		ret = work_busy(&rmi4_data->led_delay_work.work);
+		if(ret == WORK_BUSY_PENDING) {
+			cancel_delayed_work_sync(&rmi4_data->led_delay_work);					
+		}
+		//<ASUS_led->
+		if(pwrkey_mode == 1){
+			input_report_key(rmi4_data->input_dev, KEY_HOME, 1);
+		}else{
+			input_report_key(rmi4_data->input_dev, KEY_B, 1);
+		}
+#endif
+#ifndef ASUS_FACTORY_BUILD
+		input_report_key(rmi4_data->input_dev, KEY_HOME, 1);
+#endif
+		input_sync(rmi4_data->input_dev);
+        } //<ASUS_proximity+>
+		btn_home=1;
+	}else if(buf_val == 2) {		
+		printk("[cap] %s : back key press buf_val=%d\n", __func__, buf_val);
+		//<ASUS_cap_delta_count+>
+		delta_count_addr = 0x12;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_val, 1);
+		delta_count_addr_2 = 0x13;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_val_2, 1);
+		printk("[cap]%s : addr=0x%02x%02x, CS2_delta=0x%02x%02x\n", __func__, delta_count_addr, delta_count_addr_2, delta_val, delta_val_2);
+		//<ASUS_cap_delta_count->
+        if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+		#ifdef ASUS_FACTORY_BUILD
+		//<ASUS_led+>
+		set_button_backlight(true);
+		ret = work_busy(&rmi4_data->led_delay_work.work);
+		if(ret == WORK_BUSY_PENDING) {
+			cancel_delayed_work_sync(&rmi4_data->led_delay_work);					
+		}
+		//<ASUS_led->
+		#endif
+		input_report_key(rmi4_data->input_dev, KEY_BACK, 1);
+		input_sync(rmi4_data->input_dev);
+        } //<ASUS_proximity+>
+		btn_back=1;
+	}else if(buf_val == 4){
+		printk("[cap] %s : menu key press buf_val=%d\n", __func__, buf_val);
+		//<ASUS_cap_delta_count+>
+		delta_count_addr = 0x14;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_val, 1);
+		delta_count_addr_2 = 0x15;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_val_2, 1);
+		printk("[cap]%s : addr=0x%02x%02x, CS3_delta=0x%02x%02x\n", __func__, delta_count_addr, delta_count_addr_2, delta_val, delta_val_2);
+		//<ASUS_cap_delta_count->
+        if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+#ifdef ASUS_FACTORY_BUILD
+		//<ASUS_led+>
+		set_button_backlight(true);
+		ret = work_busy(&rmi4_data->led_delay_work.work);
+		if(ret == WORK_BUSY_PENDING) {
+			cancel_delayed_work_sync(&rmi4_data->led_delay_work);					
+		}
+		//<ASUS_led->
+		if(pwrkey_mode == 1){
+			input_report_key(rmi4_data->input_dev, KEY_MENU, 1);
+		}else{
+			input_report_key(rmi4_data->input_dev, KEY_C, 1);
+		}
+#endif
+#ifndef ASUS_FACTORY_BUILD
+		input_report_key(rmi4_data->input_dev, KEY_MENU, 1);
+#endif
+		input_sync(rmi4_data->input_dev);
+        } //<ASUS_proximity+>
+		btn_menu=1;
+	}else if (buf_val == 6){ //Screen unpinning
+        if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+		input_report_key(rmi4_data->input_dev, KEY_BACK, 1);
+		input_report_key(rmi4_data->input_dev, KEY_MENU, 1);
+		input_sync(rmi4_data->input_dev);
+        } //<ASUS_proximity+>
+		btn_menu=1;
+		btn_back=1;
+	} else if (buf_val == 5){
+		//<ASUS_cap_delta_count+>
+		delta_count_addr = 0x10;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_home_MSB, 1);
+		delta_count_addr_2 = 0x11;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_home_LSB, 1);		
+		delta_count_addr = 0x14;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_menu_MSB, 1);
+		delta_count_addr_2 = 0x15;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_menu_LSB, 1);
+		printk("[cap]%s : CS1_delta=0x%02x%02x, CS3_delta=0x%02x%02x\n", __func__
+							, delta_home_MSB, delta_home_LSB
+							, delta_menu_MSB, delta_menu_LSB);		
+		//<ASUS_cap_delta_count->			
+	} else if (buf_val == 7){
+		//<ASUS_cap_delta_count+>
+		delta_count_addr = 0x10;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_home_MSB, 1);
+		delta_count_addr_2 = 0x11;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_home_LSB, 1);
+		delta_count_addr = 0x12;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_back_MSB, 1);
+		delta_count_addr_2 = 0x13;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_back_LSB, 1);
+		delta_count_addr = 0x14;
+		cap_i2c_Read(rmi4_data, &delta_count_addr, 1, &delta_menu_MSB, 1);
+		delta_count_addr_2 = 0x15;
+		cap_i2c_Read(rmi4_data, &delta_count_addr_2, 1, &delta_menu_LSB, 1);
+		printk("[cap]%s : CS1_delta=0x%02x%02x, CS2_delta=0x%02x%02x, CS3_delta=0x%02x%02x\n", __func__
+							, delta_home_MSB, delta_home_LSB
+							, delta_back_MSB, delta_back_LSB
+							, delta_menu_MSB, delta_menu_LSB);		
+		//<ASUS_cap_delta_count->		
+ 	}else {
+		if(btn_home == 1){
+			printk("[cap] %s : home key release buf_val=%d\n", __func__, buf_val);
+            if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+#ifdef ASUS_FACTORY_BUILD
+			//<ASUS_led+>
+			ret = queue_delayed_work(rmi4_data->led_wq, &rmi4_data->led_delay_work, onesec);
+			printk("[cap] led ret(delay_wq) = %d\n", ret);
+			//<ASUS_led->
+			if(pwrkey_mode)
+				input_report_key(rmi4_data->input_dev, KEY_HOME, 0);
+			else
+				input_report_key(rmi4_data->input_dev, KEY_B, 0);
+#endif
+#ifndef ASUS_FACTORY_BUILD
+			input_report_key(rmi4_data->input_dev, KEY_HOME, 0);
+#endif
+			input_sync(rmi4_data->input_dev);
+            } //<ASUS_proximity+>
+			btn_home=0;
+		}
+		if(btn_back == 1){
+			printk("[cap] %s : back key release buf_val=%d\n", __func__, buf_val);
+            if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+			#ifdef ASUS_FACTORY_BUILD
+			//<ASUS_led+>
+			ret = queue_delayed_work(rmi4_data->led_wq, &rmi4_data->led_delay_work, onesec);
+			printk("[cap] led ret(delay_wq) = %d\n", ret);
+			//<ASUS_led->
+			#endif
+			input_report_key(rmi4_data->input_dev, KEY_BACK, 0);
+			input_sync(rmi4_data->input_dev);
+            } //<ASUS_proximity+>
+			btn_back=0;
+		}
+		if(btn_menu == 1){
+			printk("[cap] %s : menu key release buf_val=%d\n", __func__, buf_val);
+            if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+			#ifdef ASUS_FACTORY_BUILD
+			//<ASUS_led+>
+			ret = queue_delayed_work(rmi4_data->led_wq, &rmi4_data->led_delay_work, onesec);
+			printk("[cap] led ret(delay_wq) = %d\n", ret);
+			//<ASUS_led->
+			#endif
+#ifdef ASUS_FACTORY_BUILD
+			if(pwrkey_mode)
+				input_report_key(rmi4_data->input_dev, KEY_MENU, 0);
+			else
+				input_report_key(rmi4_data->input_dev, KEY_C, 0);
+#endif
+#ifndef ASUS_FACTORY_BUILD
+			input_report_key(rmi4_data->input_dev, KEY_MENU, 0);
+#endif
+			input_sync(rmi4_data->input_dev);
+            } //<ASUS_proximity+>
+			btn_menu=0;
+		}
+		if(btn_menu == 1 && btn_back == 1) {//screen unpinning
+            if(!touch_proximity_at_phone) { //<ASUS_proximity+>
+			input_report_key(rmi4_data->input_dev, KEY_BACK, 1);
+			input_report_key(rmi4_data->input_dev, KEY_MENU, 1);
+			input_sync(rmi4_data->input_dev);
+            } //<ASUS_proximity+>
+			btn_menu=0;
+			btn_back=0;
+		}
+	}
+}
+
+//<ASUS_led+>
+#ifdef ASUS_FACTORY_BUILD
+static void led_delay_work_func(struct work_struct *led_delay_work)
+{
+	set_button_backlight(false);
+	printk("[cap] set led lo\n");
+}
+#endif
+//<ASUS_led->
+
+static void cap_work_func(struct work_struct *cap_work)
+{
+	struct synaptics_rmi4_data *rmi4_data = container_of(cap_work, struct synaptics_rmi4_data, cap_work);
+	int ret = 0;
+	
+	mutex_lock(&(rmi4_data->cap_mutex));
+	
+	if (ret == 0)
+		cap_sensor_report(rmi4_data);
+	
+	mutex_unlock(&(rmi4_data->cap_mutex));
+	enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+	return;	
+	
+}
+
+static irqreturn_t cap_sensor_interrupt(int irq, void *data)
+{
+	struct synaptics_rmi4_data *rmi4_data = data;
+
+	printk("[cap] %s\n", __func__);
+				
+	if(queue_work(rmi4_data->cap_wq, &rmi4_data->cap_work))
+	{
+		disable_irq_nosync(CAP_INT_GET_PIN(CAP_INT_PIN));
+	}
+	
+	return IRQ_HANDLED;
+}
+//<ASUS_cap_sensor->
+
+//<ASUS_focal+>
+static int fts_read_Touchdata(struct synaptics_rmi4_data *rmi4_data)
+{
+    int ret = -1;
+    u8 buf[POINT_READ_BUF] = { 0 };    
+    
+    ret = cap_i2c_Read(rmi4_data, buf, 1, buf, POINT_READ_BUF);
+	if (ret < 0) {
+		printk("%s read touchdata failed.\n", __func__);
+		return ret;
+	}
+
+	buf_count_add++;
+	memcpy( buf_touch_data+(((buf_count_add-1)%30)*POINT_READ_BUF), buf, sizeof(u8)*POINT_READ_BUF );
+    
+    return 0;
+}
+
+static void fts_report_value(struct synaptics_rmi4_data *rmi4_data)
+{
+    int i;
+    u16 au16_x[FTS_MAX_POINTS] = {0};	/*x coordinate */
+	u16 au16_y[FTS_MAX_POINTS] = {0};	/*y coordinate */
+	u8 au8_touch_event[FTS_MAX_POINTS] = {0};	/*touch event:
+					0 -- down; 1-- up; 2 -- contact */
+	u8 pointid = FTS_MAX_ID;	
+	u8 buf[POINT_READ_BUF] = { 0 };
+	buf_count_neg++;
+	
+	memcpy( buf,buf_touch_data+(((buf_count_neg-1)%30)*POINT_READ_BUF), sizeof(u8)*POINT_READ_BUF );
+    
+    for (i = 0; i < FTS_MAX_POINTS; i++) {
+		pointid = (buf[FTS_TOUCH_ID_POS + FTS_ONE_TCH_LEN * i]) >> 4;
+		if (pointid >= FTS_MAX_ID)
+			break;
+		
+		au16_x[i] =
+		    (s16) (buf[FTS_TOUCH_X_H_POS + FTS_ONE_TCH_LEN * i] & 0x0F) <<
+		    8 | (s16) buf[FTS_TOUCH_X_L_POS + FTS_ONE_TCH_LEN * i];
+		au16_y[i] =
+		    (s16) (buf[FTS_TOUCH_Y_H_POS + FTS_ONE_TCH_LEN * i] & 0x0F) <<
+		    8 | (s16) buf[FTS_TOUCH_Y_L_POS + FTS_ONE_TCH_LEN * i];
+		au8_touch_event[i] =
+		    buf[FTS_TOUCH_EVENT_POS + FTS_ONE_TCH_LEN * i] >> 6;
+
+		/*if((au8_touch_event[i]==0 || au8_touch_event[i]==2))
+			return;*/
+	}
+    
+    //printk("%s [FTS] x=%d, y=%d\n", __func__, au16_x[0], au16_y[0]);
+    //key down
+    for (i = 0; i < FTS_MAX_POINTS; i++)
+	{
+		if (au8_touch_event[i] == FTS_TOUCH_DOWN)// || au8_touch_event[i] == FTS_TOUCH_CONTACT)
+		{
+			if((au16_x[i] == KEY_BACK_X_AREA) && (au16_y[i] == KEY_BACK_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] back press\n", __func__);
+                    fts_btn_back = 1;
+	                input_report_key(rmi4_data->input_dev, KEY_BACK, true);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+			
+			if((au16_x[i] == KEY_HOME_X_AREA) && (au16_y[i] == KEY_HOME_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] home press\n", __func__);
+                    fts_btn_home = 1;
+	                input_report_key(rmi4_data->input_dev, KEY_HOME, true);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+
+			if((au16_x[i] == KEY_MENU_X_AREA) && (au16_y[i] == KEY_MENU_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] menu press\n", __func__);
+                    fts_btn_menu = 1;
+	                input_report_key(rmi4_data->input_dev, KEY_MENU, true);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+        }
+	}
+    
+    //key up
+    for (i = 0; i < FTS_MAX_POINTS; i++)
+	{
+		if (au8_touch_event[i] == FTS_TOUCH_UP)
+		{
+			if((au16_x[i] == KEY_BACK_X_AREA) && (au16_y[i] == KEY_BACK_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] back relese\n", __func__);
+                    fts_btn_back = 0;
+	                input_report_key(rmi4_data->input_dev, KEY_BACK, false);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+			
+			if((au16_x[i] == KEY_HOME_X_AREA) && (au16_y[i] == KEY_HOME_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] home relese\n", __func__);
+                    fts_btn_home = 0;
+	                input_report_key(rmi4_data->input_dev, KEY_HOME, false);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+
+			if((au16_x[i] == KEY_MENU_X_AREA) && (au16_y[i] == KEY_MENU_Y_AREA))
+			{		
+                if(!touch_proximity_at_phone) {
+                    printk("[%s][FTS][cap] menu relese\n", __func__);
+                    fts_btn_menu = 0;
+	                input_report_key(rmi4_data->input_dev, KEY_MENU, false);
+	                input_sync(rmi4_data->input_dev);
+                }
+			}
+        }
+	}
+    
+    return;
+}
+
+static void fts_touch_irq_work(struct work_struct *work)
+{
+    struct synaptics_rmi4_data *rmi4_data = container_of(work, struct synaptics_rmi4_data, fts_touch_event_work);
+	int ret;
+    ret = -1;
+    
+    mutex_lock(&(rmi4_data->cap_mutex));
+	ret = fts_read_Touchdata(rmi4_data);
+	if (ret == 0)
+		fts_report_value(rmi4_data);
+	
+    mutex_unlock(&(rmi4_data->cap_mutex));
+	enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+    return;
+}
+
+static irqreturn_t fts_ts_interrupt(int irq, void *data)
+{
+	struct synaptics_rmi4_data *rmi4_data = data;
+
+    if(queue_work(rmi4_data->fts_workqueue, &rmi4_data->fts_touch_event_work))
+	{
+		disable_irq_nosync(CAP_INT_GET_PIN(CAP_INT_PIN));
+	}
+
+	return IRQ_HANDLED;
+}
+
+static void fts_glove_delay_work_func(struct work_struct *work)
+{
+    int retval;
+    unsigned char cap_buf[2] = {0};
+    struct delayed_work *delayed_work = container_of(work, struct delayed_work, work);
+    struct synaptics_rmi4_data *rmi4_data =	container_of(delayed_work, struct synaptics_rmi4_data, fts_glove_delay_work);
+    if(rmi4_data->suspend == true)
+		printk("%s suspend = %d skip this function\n",__func__,rmi4_data->suspend);
+	else{
+		if(cap_sel_status == 1) {
+			if(glove_mode == 1) {
+				cap_buf[0] = 0xc0;
+				cap_buf[1] = 0x01;
+				retval = cap_i2c_write(rmi4_data, cap_buf, 2);
+				if(retval < 0)
+					printk("%s [fts] retval = %d glove mode write failure.\n", __func__, retval);
+			}else {
+				cap_buf[0] = 0xc0;
+				cap_buf[1] = 0x00;
+				retval = cap_i2c_write(rmi4_data, cap_buf, 2);
+				if(retval < 0)
+					printk("%s [fts] retval = %d glove mode write failure.\n", __func__, retval);
+			}
+		}
+		printk("%s set glove parameter done\n", __func__);
+	}
+}
+//<ASUS_focal->
+
+//<ASUS_cap_calibration+>
+/*
+static void calibration_work_function(struct work_struct *cap_cal_wq) {
+	int ret;
+    unsigned char buf_val=0x00;
+	unsigned char cap_read_addr = 0x00;
+	unsigned char buf_val_write[2]={0x06, 0x0F};
+	struct synaptics_rmi4_data *rmi4_data = container_of((struct delayed_work *) cap_cal_wq, struct synaptics_rmi4_data, calibration_work);
+	
+    cap_i2c_Read(rmi4_data, &cap_read_addr, 1, &buf_val, 1);	
+	if (glove_mode == 1) {
+		if (rmi4_data->usb_status == 1) { //(glove, usb) = (1,1)
+			buf_val_write[1] = 0x21;
+		}else {							  //(glove, usb) = (1,0)
+			buf_val_write[1] = 0x21;
+		}
+	}else {
+		if (rmi4_data->usb_status == 1) { //(glove, usb) = (0,1)
+			buf_val_write[1] = 0x20;
+		} else {
+			buf_val_write[1] = 0x18;	  //(glove, usb) = (0,0)
+		}
+	}
+	
+    if (buf_val == 0) {
+        ret = cap_i2c_write(rmi4_data, buf_val_write, 2);
+		printk("[cap] %s set sampling configuration write value=0x%x.\n", __func__, buf_val_write[1]);
+    }
+    queue_delayed_work(rmi4_data->cap_cal_wq, &rmi4_data->calibration_work, msecs_to_jiffies(60000));
+}
+*/
+//<ASUS_cap_calibration->
+
+//<ASUS_usb_cable_status+>
+void synaptics_usb_detection(bool plugin)
+{
+	if (gb_rmi4_data == NULL) {
+		printk("%s : global rmi4_data variable is null, skip \n", __func__);
+		return;
+	}
+	
+	if (plugin) {
+		gb_rmi4_data->usb_status = 1; /*AC plug in*/
+		printk("%s usb_status=%d\n", __func__, gb_rmi4_data->usb_status);
+	} else {
+		gb_rmi4_data->usb_status = 0; /*no AC */
+		printk("%s usb_status=%d\n", __func__, gb_rmi4_data->usb_status);
+	}
+	queue_work(gb_rmi4_data->usb_wq, &gb_rmi4_data->usb_detect_work);
+}
+static void synaptics_cable_statue(struct work_struct *work)
+{
+	struct synaptics_rmi4_data *rmi4_data = container_of(work, struct synaptics_rmi4_data, usb_detect_work);
+	
+	int status = rmi4_data->usb_status;
+	
+	if (!fw_update_state) {
+		if (status == 0 && cap_sel_status == 0) {	/*no AC */ //<ASUS_focal+>
+			if (glove_mode == 1) {
+				printk("%s set cap_sensor_glove_init\n", __func__);
+				cap_sensor_glove_init(rmi4_data);
+			} else {
+				printk("%s set reg_init\n", __func__);
+				cap_sensor_reg_init(rmi4_data);
+			}
+		} else if (status == 1 && cap_sel_status == 0) {	/*AC plug in*/	//<ASUS_focal+>
+			if (glove_mode == 1) {
+				printk("%s set cap_sensor_glove_usb_init\n", __func__);
+				cap_sensor_glove_usb_mode_init(rmi4_data);
+			} else {
+				printk("%s set usb_init\n", __func__);
+				cap_sensor_usb_init(rmi4_data);
+			}
+		}
+	}
+	
+	return;
+}
+//<ASUS_usb_cable_status->
+
 static irqreturn_t synaptics_rmi4_irq(int irq, void *data)
 {
 	struct synaptics_rmi4_data *rmi4_data = data;
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
-
-	if (IRQ_HANDLED == synaptics_filter_interrupt(data))
-		return IRQ_HANDLED;
 
 	if (gpio_get_value(bdata->irq_gpio) != bdata->irq_on_state)
 		goto exit;
@@ -2225,6 +4365,9 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 	unsigned char size_of_2d_data;
 	unsigned char size_of_query8;
 	unsigned char ctrl_8_offset;
+	unsigned char ctrl_10_offset;
+	unsigned char ctrl_15_offset; //<ASUS_COVER+>
+	unsigned char ctrl_18_offset; //<ASUS_DTP+>
 	unsigned char ctrl_20_offset;
 	unsigned char ctrl_23_offset;
 	unsigned char ctrl_28_offset;
@@ -2234,6 +4377,9 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 	struct synaptics_rmi4_f12_query_5 *query_5 = NULL;
 	struct synaptics_rmi4_f12_query_8 *query_8 = NULL;
 	struct synaptics_rmi4_f12_ctrl_8 *ctrl_8 = NULL;
+	struct synaptics_rmi4_f12_ctrl_10 *ctrl_10 = NULL; //<ASUS_Glove+>
+	struct synaptics_rmi4_f12_ctrl_15 *ctrl_15 = NULL; //<ASUS_COVER+>
+	struct synaptics_rmi4_f12_ctrl_18 *ctrl_18 = NULL; //<ASUS_DTP+>
 	struct synaptics_rmi4_f12_ctrl_23 *ctrl_23 = NULL;
 	struct synaptics_rmi4_f12_ctrl_31 *ctrl_31 = NULL;
 	const struct synaptics_dsx_board_data *bdata =
@@ -2277,7 +4423,39 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 		retval = -ENOMEM;
 		goto exit;
 	}
+	//<ASUS_Glove+>
+	ctrl_10 = kmalloc(sizeof(*ctrl_10), GFP_KERNEL);
+	if (!ctrl_10) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_10\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	//<ASUS_Glove->
 
+	//<ASUS_COVER+>
+	ctrl_15 = kmalloc(sizeof(*ctrl_15), GFP_KERNEL);
+	if (!ctrl_15) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_15\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	//<ASUS_COVER->
+	
+	//<ASUS_DTP+>
+	ctrl_18 = kmalloc(sizeof(*ctrl_18), GFP_KERNEL);
+	if (!ctrl_18) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for ctrl_18\n",
+				__func__);
+		retval = -ENOMEM;
+		goto exit;
+	}
+	//<ASUS_DTP->
+	
 	ctrl_23 = kmalloc(sizeof(*ctrl_23), GFP_KERNEL);
 	if (!ctrl_23) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -2312,6 +4490,22 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 			query_5->ctrl6_is_present +
 			query_5->ctrl7_is_present;
 
+	ctrl_10_offset = ctrl_8_offset +
+			query_5->ctrl8_is_present +
+			query_5->ctrl9_is_present;
+	
+	ctrl_15_offset = ctrl_10_offset +
+			query_5->ctrl10_is_present +
+			query_5->ctrl11_is_present +
+			query_5->ctrl12_is_present +
+			query_5->ctrl13_is_present +
+			query_5->ctrl14_is_present;
+	
+	ctrl_18_offset = ctrl_15_offset +
+			query_5->ctrl15_is_present +
+			query_5->ctrl16_is_present +
+			query_5->ctrl17_is_present;
+	
 	ctrl_20_offset = ctrl_8_offset +
 			query_5->ctrl8_is_present +
 			query_5->ctrl9_is_present +
@@ -2352,7 +4546,19 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 		else if (retval < 0)
 			goto exit;
 	}
-
+	
+	//<ASUS_Glove+>
+	rmi4_data->f12_ctrl10_base_addr = fhandler->full_addr.ctrl_base + ctrl_10_offset;
+	rmi4_data->f12_ctrl23_base_addr = fhandler->full_addr.ctrl_base + ctrl_23_offset;
+	//<ASUS_Glove->
+	//<ASUS_COVER+>
+	rmi4_data->f12_ctrl15_base_addr = fhandler->full_addr.ctrl_base + ctrl_15_offset;
+	//<ASUS_COVER->	
+	//<ASUS_DTP+>
+	rmi4_data->f12_ctrl18_base_addr = fhandler->full_addr.ctrl_base + ctrl_18_offset;
+	printk("%s ctrl 18 addr=0x%02x\n", __func__, rmi4_data->f12_ctrl18_base_addr);
+	//<ASUS_DTP->	
+	
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			fhandler->full_addr.ctrl_base + ctrl_23_offset,
 			ctrl_23->data,
@@ -2361,14 +4567,14 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 		goto exit;
 
 	/* Maximum number of fingers supported */
-	fhandler->num_of_data_points = min_t(unsigned char,
-			ctrl_23->max_reported_objects,
+	fhandler->num_of_data_points = min(ctrl_23->max_reported_objects,
 			(unsigned char)F12_FINGERS_TO_SUPPORT);
 
 	num_of_fingers = fhandler->num_of_data_points;
 	rmi4_data->num_of_fingers = num_of_fingers;
 
-	rmi4_data->stylus_enable = ctrl_23->stylus_enable;
+	rmi4_data->stylus_enable = false;//ctrl_23->stylus_enable;
+	printk("%s stylus_enable=%d\n", __func__, rmi4_data->stylus_enable);
 	rmi4_data->eraser_enable = ctrl_23->eraser_enable;
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
@@ -2533,6 +4739,8 @@ exit:
 	kfree(query_5);
 	kfree(query_8);
 	kfree(ctrl_8);
+	kfree(ctrl_15);
+	kfree(ctrl_18);
 	kfree(ctrl_23);
 	kfree(ctrl_31);
 
@@ -2605,19 +4813,18 @@ static int synaptics_rmi4_f1a_button_map(struct synaptics_rmi4_data *rmi4_data,
 {
 	int retval;
 	unsigned char ii;
-	unsigned char offset = 0;
-	struct synaptics_rmi4_f1a_query_4 query_4;
+	unsigned char mapping_offset = 0;
 	struct synaptics_rmi4_f1a_handle *f1a = fhandler->data;
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
 
-	offset = f1a->button_query.has_general_control +
+	mapping_offset = f1a->button_query.has_general_control +
 			f1a->button_query.has_interrupt_enable +
 			f1a->button_query.has_multibutton_select;
 
 	if (f1a->button_query.has_tx_rx_map) {
 		retval = synaptics_rmi4_reg_read(rmi4_data,
-				fhandler->full_addr.ctrl_base + offset,
+				fhandler->full_addr.ctrl_base + mapping_offset,
 				f1a->button_control.txrx_map,
 				f1a->max_count * 2);
 		if (retval < 0) {
@@ -2628,27 +4835,6 @@ static int synaptics_rmi4_f1a_button_map(struct synaptics_rmi4_data *rmi4_data,
 		}
 
 		rmi4_data->button_txrx_mapping = f1a->button_control.txrx_map;
-	}
-
-	if (f1a->button_query.has_query4) {
-		offset = 2 + f1a->button_query.has_query2 +
-				f1a->button_query.has_query3;
-
-		retval = synaptics_rmi4_reg_read(rmi4_data,
-				fhandler->full_addr.query_base + offset,
-				query_4.data,
-				sizeof(query_4.data));
-		if (retval < 0) {
-			dev_err(rmi4_data->pdev->dev.parent,
-					"%s: Failed to read button features 4\n",
-					__func__);
-			return retval;
-		}
-
-		if (query_4.has_ctrl24)
-			rmi4_data->external_afe_buttons = true;
-		else
-			rmi4_data->external_afe_buttons = false;
 	}
 
 	if (!bdata->cap_button_map) {
@@ -2810,8 +4996,8 @@ static void synaptics_rmi4_set_configured(struct synaptics_rmi4_data *rmi4_data)
 		return;
 	}
 
-	rmi4_data->no_sleep_setting = device_ctrl & NO_SLEEP_ON;
-	device_ctrl |= CONFIGURED;
+	rmi4_data->no_sleep_setting = device_ctrl | NO_SLEEP_ON;
+	device_ctrl |= CONFIGURED | rmi4_data->no_sleep_setting;
 
 	retval = synaptics_rmi4_reg_write(rmi4_data,
 			rmi4_data->f01_ctrl_base_addr,
@@ -2855,6 +5041,7 @@ static int synaptics_rmi4_query_device(struct synaptics_rmi4_data *rmi4_data)
 	unsigned char page_number;
 	unsigned char intr_count;
 	unsigned char *f01_query;
+	unsigned char config_id[4];			//<ASUS_buildid+>
 	unsigned short pdt_entry_addr;
 	bool f01found;
 	bool f35found;
@@ -3049,11 +5236,13 @@ flash_prog_mode:
 				__func__);
 		return -ENOMEM;
 	}
-
+	
 	retval = synaptics_rmi4_reg_read(rmi4_data,
-			rmi4_data->f01_query_base_addr,
-			f01_query,
-			F01_STD_QUERY_LEN);
+		rmi4_data->f01_query_base_addr,
+		f01_query,
+		F01_STD_QUERY_LEN);
+
+	
 	if (retval < 0) {
 		kfree(f01_query);
 		return retval;
@@ -3097,6 +5286,21 @@ flash_prog_mode:
 			(unsigned int)rmi->build_id[1] * 0x100 +
 			(unsigned int)rmi->build_id[2] * 0x10000;
 
+	//<ASUS_buildid+>
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			F34_FLASH_CTRL00,
+			config_id,
+			sizeof(config_id));
+
+	if (retval < 0)
+		return retval;
+
+	rmi4_data->config_id = (((unsigned int)config_id[0]) << 24) +
+			(((unsigned int)config_id[1]) << 16) +
+			(((unsigned int)config_id[2]) << 8) +
+			((unsigned int)config_id[3]);
+	//<ASUS_buildid->
+			
 	memset(rmi4_data->intr_mask, 0x00, sizeof(rmi4_data->intr_mask));
 
 	/*
@@ -3128,9 +5332,7 @@ static int synaptics_rmi4_gpio_setup(int gpio, bool config, int dir, int state)
 	unsigned char buf[16];
 
 	if (config) {
-		retval = snprintf(buf, ARRAY_SIZE(buf), "dsx_gpio_%u\n", gpio);
-		if (retval >= 16)
-			return -EINVAL;
+		snprintf(buf, PAGE_SIZE, "dsx_gpio_%u\n", gpio);
 
 		retval = gpio_request(gpio, buf);
 		if (retval) {
@@ -3224,8 +5426,8 @@ static void synaptics_rmi4_set_params(struct synaptics_rmi4_data *rmi4_data)
 	}
 
 	if (rmi4_data->f11_wakeup_gesture || rmi4_data->f12_wakeup_gesture) {
-		set_bit(KEY_WAKEUP, rmi4_data->input_dev->keybit);
-		input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_WAKEUP);
+		set_bit(KEY_POWER, rmi4_data->input_dev->keybit);
+		input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_POWER);
 	}
 
 	return;
@@ -3270,6 +5472,40 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 	set_bit(INPUT_PROP_DIRECT, rmi4_data->input_dev->propbit);
 #endif
 
+	//<ASUS_cap_sensor+>
+	set_bit(KEY_MENU, rmi4_data->input_dev->keybit);
+	set_bit(KEY_BACK, rmi4_data->input_dev->keybit);
+	set_bit(KEY_HOME, rmi4_data->input_dev->keybit);
+#ifdef ASUS_FACTORY_BUILD
+	set_bit(KEY_B, rmi4_data->input_dev->keybit);
+	set_bit(KEY_C, rmi4_data->input_dev->keybit);
+#endif
+	//<ASUS_cap_sensor->
+
+#ifdef WAKEUP_GESTURE
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_DCLICK);
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_SWIPE_UP); 
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_E); 
+	//input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_M); 
+	//input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_L);
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_W);
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_S); 
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_V);
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_Z);
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_GESTURE_C);
+	
+	__set_bit(KEY_GESTURE_DCLICK, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_SWIPE_UP, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_E, rmi4_data->input_dev->keybit);
+	//__set_bit(KEY_GESTURE_M, rmi4_data->input_dev->keybit);
+	//__set_bit(KEY_GESTURE_L, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_W, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_S, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_V, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_Z, rmi4_data->input_dev->keybit);
+	__set_bit(KEY_GESTURE_C, rmi4_data->input_dev->keybit);
+#endif
+	
 	if (bdata->max_y_for_2d >= 0)
 		rmi4_data->sensor_max_y = bdata->max_y_for_2d;
 
@@ -3282,8 +5518,8 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 				__func__);
 		goto err_register_input;
 	}
-
-	if (!rmi4_data->stylus_enable)
+	
+	/*if (!rmi4_data->stylus_enable)
 		return 0;
 
 	rmi4_data->stylus_dev = input_allocate_device();
@@ -3323,16 +5559,16 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 				"%s: Failed to register stylus device\n",
 				__func__);
 		goto err_register_stylus;
-	}
+	}*/
 
 	return 0;
 
-err_register_stylus:
+/*err_register_stylus:
 	rmi4_data->stylus_dev = NULL;
 
 err_stylus_device:
 	input_unregister_device(rmi4_data->input_dev);
-	rmi4_data->input_dev = NULL;
+	rmi4_data->input_dev = NULL;*/
 
 err_register_input:
 err_query_device:
@@ -3343,12 +5579,65 @@ err_input_device:
 	return retval;
 }
 
+static int synaptics_dsx_pinctrl_init(struct synaptics_rmi4_data *rmi4_data)
+{
+	int retval;
+
+	/* Get pinctrl if target uses pinctrl */
+	rmi4_data->ts_pinctrl = devm_pinctrl_get((rmi4_data->pdev->dev.parent));
+	if (IS_ERR_OR_NULL(rmi4_data->ts_pinctrl)) {
+		retval = PTR_ERR(rmi4_data->ts_pinctrl);
+		dev_dbg(rmi4_data->pdev->dev.parent,
+			"Target does not use pinctrl %d\n", retval);
+		goto err_pinctrl_get;
+	}
+
+	rmi4_data->pinctrl_state_active
+		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_active");
+	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_active)) {
+		retval = PTR_ERR(rmi4_data->pinctrl_state_active);
+		dev_err(rmi4_data->pdev->dev.parent,
+			"Can not lookup %s pinstate %d\n",
+			PINCTRL_STATE_ACTIVE, retval);
+		goto err_pinctrl_lookup;
+	}
+
+	rmi4_data->pinctrl_state_suspend
+		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_suspend");
+	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_suspend)) {
+		retval = PTR_ERR(rmi4_data->pinctrl_state_suspend);
+		dev_dbg(rmi4_data->pdev->dev.parent,
+			"Can not lookup %s pinstate %d\n",
+			PINCTRL_STATE_SUSPEND, retval);
+		goto err_pinctrl_lookup;
+	}
+	
+	rmi4_data->pinctrl_state_release
+		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_release");
+	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_release)) {
+		retval = PTR_ERR(rmi4_data->pinctrl_state_release);
+		dev_dbg(rmi4_data->pdev->dev.parent,
+			"Can not lookup %s pinstate %d\n",
+			PINCTRL_STATE_RELEASE, retval);
+	}
+
+	return 0;
+
+err_pinctrl_lookup:
+	devm_pinctrl_put(rmi4_data->ts_pinctrl);
+err_pinctrl_get:
+	rmi4_data->ts_pinctrl = NULL;
+	return retval;
+}
+
 static int synaptics_rmi4_set_gpio(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
 
+	printk("%s start\n", __func__);
+	
 	retval = synaptics_rmi4_gpio_setup(
 			bdata->irq_gpio,
 			true, 0, 0);
@@ -3359,7 +5648,7 @@ static int synaptics_rmi4_set_gpio(struct synaptics_rmi4_data *rmi4_data)
 		goto err_gpio_irq;
 	}
 
-	if (bdata->power_gpio >= 0) {
+	/*if (bdata->power_gpio >= 0) {
 		retval = synaptics_rmi4_gpio_setup(
 				bdata->power_gpio,
 				true, 1, !bdata->power_on_state);
@@ -3369,7 +5658,7 @@ static int synaptics_rmi4_set_gpio(struct synaptics_rmi4_data *rmi4_data)
 					__func__);
 			goto err_gpio_power;
 		}
-	}
+	}*/
 
 	if (bdata->reset_gpio >= 0) {
 		retval = synaptics_rmi4_gpio_setup(
@@ -3383,17 +5672,44 @@ static int synaptics_rmi4_set_gpio(struct synaptics_rmi4_data *rmi4_data)
 		}
 	}
 
-	if (bdata->power_gpio >= 0) {
+	/*if (bdata->power_gpio >= 0) {
 		gpio_set_value(bdata->power_gpio, bdata->power_on_state);
 		msleep(bdata->power_delay_ms);
-	}
+	}*/
 
 	if (bdata->reset_gpio >= 0) {
 		gpio_set_value(bdata->reset_gpio, bdata->reset_on_state);
-		msleep(bdata->reset_active_ms);
+		msleep(20);
 		gpio_set_value(bdata->reset_gpio, !bdata->reset_on_state);
-		msleep(bdata->reset_delay_ms);
+		msleep(20);
 	}
+	if(cap_sel_status == 0) {
+        //<ASUS_cap_sensor+>
+        retval = gpio_request(CAP_INT_PIN, CAP_INT_PIN_NAME);
+        if (retval < 0) {
+                dev_err(rmi4_data->pdev->dev.parent,
+                        "[cap] %s: Failed to configure cap-int GPIO\n",
+                        __func__);
+                return retval;
+        }
+        gpio_direction_input(CAP_INT_PIN);
+        pr_info("[cap] %s: cap-sensor gpio_request int gpio Num: %d\n", __func__,CAP_INT_PIN);
+        //<ASUS_cap_sensor->
+    }else if(cap_sel_status == 1){
+        //<ASUS_focal+>
+        retval = gpio_request(CAP_INT_PIN, FTS_CAP_INT_PIN_NAME);
+        if (retval < 0) {
+                dev_err(rmi4_data->pdev->dev.parent,
+                        "[FTS][cap] %s: Failed to configure cap-int GPIO\n",
+                        __func__);
+                return retval;
+        }
+        gpio_direction_input(CAP_INT_PIN);
+        pr_info("[FTS][cap] %s: cap-sensor gpio_request int gpio Num: %d\n", __func__,CAP_INT_PIN);
+        //<ASUS_focal->
+	}
+	
+	printk("%s end\n", __func__);
 
 	return 0;
 
@@ -3401,11 +5717,12 @@ err_gpio_reset:
 	if (bdata->power_gpio >= 0)
 		synaptics_rmi4_gpio_setup(bdata->power_gpio, false, 0, 0);
 
-err_gpio_power:
-	synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+/*err_gpio_power:
+	synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);*/
 
 err_gpio_irq:
 	return retval;
+	
 }
 
 static int synaptics_rmi4_get_reg(struct synaptics_rmi4_data *rmi4_data,
@@ -3553,6 +5870,7 @@ static int synaptics_rmi4_sw_reset(struct synaptics_rmi4_data *rmi4_data)
 	int retval;
 	unsigned char command = 0x01;
 
+    printk("%s start\n", __func__);
 	retval = synaptics_rmi4_reg_write(rmi4_data,
 			rmi4_data->f01_cmd_base_addr,
 			&command,
@@ -3560,7 +5878,7 @@ static int synaptics_rmi4_sw_reset(struct synaptics_rmi4_data *rmi4_data)
 	if (retval < 0)
 		return retval;
 
-	msleep(rmi4_data->hw_if->board_data->reset_delay_ms);
+	msleep(20);
 
 	if (rmi4_data->hw_if->ui_hw_init) {
 		retval = rmi4_data->hw_if->ui_hw_init(rmi4_data);
@@ -3653,6 +5971,49 @@ exit:
 	return;
 }
 
+static int synaptics_rmi4_reinit_device(struct synaptics_rmi4_data *rmi4_data)
+{
+	int retval;
+	struct synaptics_rmi4_fn *fhandler;
+	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
+	struct synaptics_rmi4_device_info *rmi;
+
+	rmi = &(rmi4_data->rmi4_mod_info);
+
+	mutex_lock(&(rmi4_data->rmi4_reset_mutex));
+
+	synaptics_rmi4_free_fingers(rmi4_data);
+
+	if (!list_empty(&rmi->support_fn_list)) {
+		list_for_each_entry(fhandler, &rmi->support_fn_list, link) {
+			if (fhandler->fn_number == SYNAPTICS_RMI4_F12) {
+				synaptics_rmi4_f12_set_enables(rmi4_data, 0);
+				break;
+			}
+		}
+	}
+
+	retval = synaptics_rmi4_int_enable(rmi4_data, true);
+	if (retval < 0)
+		goto exit;
+
+	mutex_lock(&exp_data.mutex);
+	if (!list_empty(&exp_data.list)) {
+		list_for_each_entry(exp_fhandler, &exp_data.list, link)
+			if (exp_fhandler->exp_fn->reinit != NULL)
+				exp_fhandler->exp_fn->reinit(rmi4_data);
+	}
+	mutex_unlock(&exp_data.mutex);
+
+	synaptics_rmi4_set_configured(rmi4_data);
+
+	retval = 0;
+
+exit:
+	mutex_unlock(&(rmi4_data->rmi4_reset_mutex));
+	return retval;
+}
+
 static int synaptics_rmi4_reset_device(struct synaptics_rmi4_data *rmi4_data,
 		bool rebuild)
 {
@@ -3668,6 +6029,7 @@ static int synaptics_rmi4_reset_device(struct synaptics_rmi4_data *rmi4_data,
 
 	mutex_lock(&(rmi4_data->rmi4_reset_mutex));
 
+	rmi4_data->touch_stopped = true;
 	synaptics_rmi4_irq_enable(rmi4_data, false, false);
 
 	retval = synaptics_rmi4_sw_reset(rmi4_data);
@@ -3703,6 +6065,8 @@ static int synaptics_rmi4_reset_device(struct synaptics_rmi4_data *rmi4_data,
 exit:
 	synaptics_rmi4_irq_enable(rmi4_data, true, false);
 
+	rmi4_data->touch_stopped = false;
+	
 	mutex_unlock(&(rmi4_data->rmi4_reset_mutex));
 
 	return retval;
@@ -3764,10 +6128,15 @@ static void synaptics_rmi4_sleep_enable(struct synaptics_rmi4_data *rmi4_data,
 	}
 
 	device_ctrl = device_ctrl & ~MASK_3BIT;
-	if (enable)
-		device_ctrl = device_ctrl | NO_SLEEP_OFF | SENSOR_SLEEP;
+	if (enable) {
+		if ((dclick_mode == 1) || (swipe_mode == 1) || (gesture_mode & GESTURE_SWITCH)) {
+			device_ctrl = NO_SLEEP_OFF;
+		} else {
+			device_ctrl = device_ctrl | NO_SLEEP_OFF | SENSOR_SLEEP;
+		}
+	}
 	else
-		device_ctrl = device_ctrl | no_sleep_setting | NORMAL_OPERATION;
+		device_ctrl = device_ctrl | no_sleep_setting | NORMAL_OPERATION | NO_SLEEP_ON;
 
 	retval = synaptics_rmi4_reg_write(rmi4_data,
 			rmi4_data->f01_ctrl_base_addr,
@@ -3784,6 +6153,15 @@ static void synaptics_rmi4_sleep_enable(struct synaptics_rmi4_data *rmi4_data,
 
 	return;
 }
+
+//<ASUS_SDev+>
+static ssize_t touch_switch_name(struct switch_dev *sdev, char *buf)
+{
+	struct synaptics_rmi4_data *rmi4_data = container_of(sdev, struct synaptics_rmi4_data, touch_sdev);
+
+	return sprintf(buf, "%u_%x_0x%02x\n",rmi4_data->firmware_id, rmi4_data->config_id, rmi4_data->cap_fw_id);
+}
+//<ASUS_SDev->
 
 static void synaptics_rmi4_exp_fn_work(struct work_struct *work)
 {
@@ -3864,65 +6242,548 @@ exit:
 }
 EXPORT_SYMBOL(synaptics_rmi4_new_function);
 
-static int synaptics_dsx_pinctrl_init(struct synaptics_rmi4_data *rmi4_data)
+static int synaptics_dsx_regulator_configure(struct synaptics_rmi4_data
+			*rmi4_data)
 {
 	int retval;
-
-	/* Get pinctrl if target uses pinctrl */
-	rmi4_data->ts_pinctrl = devm_pinctrl_get((rmi4_data->pdev->dev.parent));
-	if (IS_ERR_OR_NULL(rmi4_data->ts_pinctrl)) {
-		retval = PTR_ERR(rmi4_data->ts_pinctrl);
+	rmi4_data->regulator_vdd = regulator_get(rmi4_data->pdev->dev.parent,
+			"vdd");
+	if (IS_ERR(rmi4_data->regulator_vdd)) {
 		dev_err(rmi4_data->pdev->dev.parent,
-			"Target does not use pinctrl %d\n", retval);
-		goto err_pinctrl_get;
+				"%s: Failed to get regulator vdd\n",
+				__func__);
+		retval = PTR_ERR(rmi4_data->regulator_vdd);
+		return retval;
 	}
-
-	rmi4_data->pinctrl_state_active
-		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_active");
-	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_active)) {
-		retval = PTR_ERR(rmi4_data->pinctrl_state_active);
+	rmi4_data->regulator_avdd = regulator_get(rmi4_data->pdev->dev.parent,
+			"avdd");
+	if (IS_ERR(rmi4_data->regulator_avdd)) {
 		dev_err(rmi4_data->pdev->dev.parent,
-			"Can not lookup %s pinstate %d\n",
-			PINCTRL_STATE_ACTIVE, retval);
-		goto err_pinctrl_lookup;
-	}
-
-	rmi4_data->pinctrl_state_suspend
-		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_suspend");
-	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_suspend)) {
-		retval = PTR_ERR(rmi4_data->pinctrl_state_suspend);
-		dev_dbg(rmi4_data->pdev->dev.parent,
-			"Can not lookup %s pinstate %d\n",
-			PINCTRL_STATE_SUSPEND, retval);
-		goto err_pinctrl_lookup;
-	}
-
-	rmi4_data->pinctrl_state_release
-		= pinctrl_lookup_state(rmi4_data->ts_pinctrl, "pmx_ts_release");
-	if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_release)) {
-		retval = PTR_ERR(rmi4_data->pinctrl_state_release);
-		dev_dbg(rmi4_data->pdev->dev.parent,
-			"Can not lookup %s pinstate %d\n",
-			PINCTRL_STATE_RELEASE, retval);
+				"%s: Failed to get regulator avdd\n",
+				__func__);
+		retval = PTR_ERR(rmi4_data->regulator_avdd);
+		regulator_put(rmi4_data->regulator_vdd);
+		return retval;
 	}
 
 	return 0;
+};
 
-err_pinctrl_lookup:
-	devm_pinctrl_put(rmi4_data->ts_pinctrl);
-err_pinctrl_get:
-	rmi4_data->ts_pinctrl = NULL;
-	return retval;
+static int synaptics_dsx_regulator_enable(struct synaptics_rmi4_data
+			*rmi4_data, bool on)
+{
+	int retval;
+
+	if (on) {
+		retval = regulator_enable(rmi4_data->regulator_vdd);
+		if (retval) {
+			dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to enable regulator vdd\n",
+				__func__);
+			return retval;
+		}
+		retval = regulator_enable(rmi4_data->regulator_avdd);
+		if (retval) {
+			dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to enable regulator avdd\n",
+				__func__);
+			regulator_disable(rmi4_data->regulator_vdd);
+			return retval;
+		}
+		//msleep(rmi4_data->hw_if->board_data->power_delay_ms);
+	} else {
+		regulator_disable(rmi4_data->regulator_vdd);
+		regulator_disable(rmi4_data->regulator_avdd);
+	}
+
+	return 0;
 }
+
+//<ASUS_cap_sensor+>
+void cap_sensor_glove_init(struct synaptics_rmi4_data *rmi4_data)
+{
+	int ret,i;
+	unsigned char buf_val[2]={0};
+	unsigned char buf_reg[]={0x02, 0x03, 0x04, 0x06, 0x0b};
+	unsigned char buf_reg_val[]={0x3e, 0x3e, 0x3e, 0x29, 0x0a};
+	printk("[cap] cap sensor glove init start\n");	
+	
+	for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+		buf_val[0] = buf_reg[i];
+		buf_val[1] = buf_reg_val[i];
+		ret = cap_i2c_write(rmi4_data, buf_val, 2);
+		if(ret < 0){
+			printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+		}
+		printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+	}
+}
+void cap_sensor_glove_usb_mode_init(struct synaptics_rmi4_data *rmi4_data)
+{
+	int ret,i;
+	unsigned char buf_val[2]={0};
+	unsigned char buf_reg[]={0x02, 0x03, 0x04, 0x06, 0x0b};
+	unsigned char buf_reg_val[]={0x3e, 0x3e, 0x3e, 0x29, 0x0a};
+	printk("[cap] cap sensor glove usb mode init start\n");	
+	
+	for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+		buf_val[0] = buf_reg[i];
+		buf_val[1] = buf_reg_val[i];
+		ret = cap_i2c_write(rmi4_data, buf_val, 2);
+		if(ret < 0){
+			printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+		}
+		printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+	}
+}
+void cap_sensor_usb_init(struct synaptics_rmi4_data *rmi4_data)
+{
+	int ret,i;
+	unsigned char buf_val[2]={0};
+	unsigned char buf_reg[]={0x01, 0x02, 0x03, 0x04, 
+							   0x05, 0x06, 0x07, 0x08, 
+							   0x09, 0x0a, 0x0b};
+	unsigned char buf_reg_val_ER[] = {0x00, 0x4b, 0x4b, 0x4b,
+									   0x07, 0x20, 0x05, 0x01,
+									   0x1e, 0x04, 0x1a};	//ER parameter
+	unsigned char buf_reg_val_PR[]={0x00, 0x4b, 0x4b, 0x4b,
+									   0x07, 0x20, 0x05, 0x01,
+									   0x1e, 0x04, 0x1a}; //PR parameter
+	
+	printk("[cap] cap sensor usb init start\n");	
+	
+	if (asus_HW_ID == HW_ID_ER1) {
+		for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+			buf_val[0] = buf_reg[i];
+			buf_val[1] = buf_reg_val_ER[i];
+			ret = cap_i2c_write(rmi4_data, buf_val, 2);
+			if(ret < 0){
+				printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+			}
+			printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+		}		
+	} else {	
+		for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+			buf_val[0] = buf_reg[i];
+			buf_val[1] = buf_reg_val_PR[i];
+			ret = cap_i2c_write(rmi4_data, buf_val, 2);
+			if(ret < 0){
+				printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+			}
+			printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+		}
+	}
+}
+void cap_sensor_reg_init(struct synaptics_rmi4_data *rmi4_data)
+{
+	int ret,i;
+	unsigned char buf_val[2]={0};
+	unsigned char buf_reg[]={0x01, 0x02, 0x03, 0x04, 
+							   0x05, 0x06, 0x07, 0x08, 
+							   0x09, 0x0a, 0x0b};
+	unsigned char buf_reg_val_ER[] = {0x00, 0x4b, 0x4b, 0x4b,
+									   0x07, 0x20, 0x05, 0x01,
+									   0x1e, 0x04, 0x1a};	//ER parameter
+	unsigned char buf_reg_val_PR[]={0x00, 0x4b, 0x4b, 0x4b,
+									   0x07, 0x20, 0x05, 0x01,
+									   0x1e, 0x04, 0x1a}; //PR parameter
+	
+	printk("[cap] cap sensor init start\n");	
+	
+	if (asus_HW_ID == HW_ID_ER1) {
+		for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+			buf_val[0] = buf_reg[i];
+			buf_val[1] = buf_reg_val_ER[i];
+			ret = cap_i2c_write(rmi4_data, buf_val, 2);
+			if(ret < 0){
+				printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+			}
+			printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+		}
+	} else {	
+		for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+			buf_val[0] = buf_reg[i];
+			buf_val[1] = buf_reg_val_PR[i];
+			ret = cap_i2c_write(rmi4_data, buf_val, 2);
+			if(ret < 0){
+				printk("[%s] write reg_addr=%d, ret =%d\n", __func__, buf_val[0], ret);
+			}
+			printk("[%s] cap sensor write buf[0] =%x, buf[1]=%x\n", __func__, buf_val[0], buf_val[1]);
+		}
+	}
+}
+//<ASUS_cap_sensor->
+
+//<ASUS_focal+>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
+/*interface of write proc*/
+/************************************************************************
+*   Name: fts_debug_write
+*  Brief:interface of write proc
+* Input: file point, data buf, data len, no use
+* Output: no
+* Return: data len
+***********************************************************************/
+static ssize_t fts_debug_write(struct file *filp, const char __user *buff, size_t count, loff_t *ppos)
+{
+	unsigned char writebuf[WRITE_BUF_SIZE];
+	int buflen = count;
+	int writelen = 0;
+	int ret = 0;
+	
+	if (copy_from_user(&writebuf, buff, buflen)) {
+		printk("%s[FTS][CAP]:copy from user error\n", __func__);
+		return -EFAULT;
+	}
+	proc_operate_mode = writebuf[0];
+
+	switch (proc_operate_mode) {
+	case PROC_UPGRADE:
+		{
+//#if 1
+			printk("%s[FTS][CAP] Please use adb app upgrade\n", __func__);
+//#else			
+			/*char upgrade_file_path[128];
+			memset(upgrade_file_path, 0, sizeof(upgrade_file_path));
+			sprintf(upgrade_file_path, "%s", writebuf + 1);
+			upgrade_file_path[buflen-1] = '\0';
+			printk("%s[FTS][CAP]%s\n", __fuc__, upgrade_file_path);
+			disable_irq(IRQ NUMBER???);
+			
+			ret = fts_ctpm_fw_upgrade_with_app_file(fts_i2c_client, upgrade_file_path);
+			enable_irq(IRQ NUMBER???);
+			if (ret < 0) {
+				printk("%s[FTS]{CAP]:upgrade failed.\n", __func__);
+				return ret;
+			}*/
+//#endif
+		}
+		break;
+	case PROC_READ_REGISTER:
+		writelen = 1;
+		
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	case PROC_WRITE_REGISTER:
+		writelen = 2;
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	case PROC_AUTOCLB:
+		printk("%s[FTS][CAP]: autoclb, not need to do this for FT3267\n", __func__);
+		//not need to do this
+		//fts_ctpm_auto_clb(fts_i2c_client);
+		break;
+	case PROC_READ_DATA:
+	case PROC_WRITE_DATA:
+		writelen = count - 1;
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("[FTS][CAP]%s:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	default:
+		break;
+	}
+	
+
+	return count;
+}
+
+/*interface of read proc*/
+/************************************************************************
+*   Name: fts_debug_read
+*  Brief:interface of read proc
+* Input: point to the data, no use, no use, read len, no use, no use 
+* Output: page point to data
+* Return: read char number
+***********************************************************************/
+static ssize_t fts_debug_read(struct file *filp, char __user *buff, size_t count, loff_t *ppos)
+{
+	int ret = 0;
+	int num_read_chars = 0;
+	int readlen = 0;
+	u8 regvalue = 0x00, regaddr = 0x00;
+	unsigned char buf[READ_BUF_SIZE];
+	
+	switch (proc_operate_mode) {
+	case PROC_UPGRADE:
+		//after calling fts_debug_write to upgrade
+		regaddr = 0xA6;
+		//change to your i2c read function
+		ret = FTS_I2c_Read(NULL, 0, &regaddr, regvalue);
+		if (ret < 0)
+			num_read_chars = sprintf(buf, "%s", "get fw version failed.\n");
+		else
+			num_read_chars = sprintf(buf, "current fw version:0x%02x\n", regvalue);
+		break;
+	case PROC_READ_REGISTER:
+		readlen = 1;
+		//change to your i2c read function
+		ret = FTS_I2c_Read(NULL, 0, buf, readlen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:read iic error\n", __func__);
+			return ret;
+		} 
+		num_read_chars = 1;
+		break;
+	case PROC_READ_DATA:
+		readlen = count;
+		//change to your i2c read function
+		ret = FTS_I2c_Read(NULL, 0, buf, readlen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:read iic error\n", __func__);
+			return ret;
+		}
+		
+		num_read_chars = readlen;
+		break;
+	case PROC_WRITE_DATA:
+		break;
+	default:
+		break;
+	}
+	
+	if (copy_to_user(buff, buf, num_read_chars)) {
+		printk("%s[FTS][CAP]:copy to user error\n", __func__);
+		return -EFAULT;
+	}
+
+	return num_read_chars;
+}
+
+static const struct file_operations fts_proc_fops = {
+		.owner = THIS_MODULE,
+		.read = fts_debug_read,
+		.write = fts_debug_write,
+		
+};
+#else
+/*interface of write proc*/
+/************************************************************************
+*   Name: fts_debug_write
+*  Brief:interface of write proc
+* Input: file point, data buf, data len, no use
+* Output: no
+* Return: data len
+***********************************************************************/
+static int fts_debug_write(struct file *filp, 
+	const char __user *buff, unsigned long len, void *data)
+{
+	unsigned char writebuf[WRITE_BUF_SIZE];
+	int buflen = len;
+	int writelen = 0;
+	int ret = 0;
+	
+	
+	if (copy_from_user(&writebuf, buff, buflen)) {
+		printk("%s[FTS][CAP]:copy from user error\n", __func__);
+		return -EFAULT;
+	}
+	proc_operate_mode = writebuf[0];
+
+    printk("%s enter\n", __fuc__);
+    printk("%s proc_operate_mode = %d\n", __fuc__, proc_operate_mode);
+    
+	switch (proc_operate_mode) {
+	
+	case PROC_UPGRADE:
+		{
+//#if 1	
+			printk("%s[FTS][CAP] Please use adb app upgrade\n", __fuc__);
+//#else		
+			/*char upgrade_file_path[128];
+			memset(upgrade_file_path, 0, sizeof(upgrade_file_path));
+			sprintf(upgrade_file_path, "%s", writebuf + 1);
+			upgrade_file_path[buflen-1] = '\0';
+			printk("%s[FTS][CAP]%s\n",__fuc__, upgrade_file_path);
+			disable_irq(IRQ number ???);
+			ret = fts_ctpm_fw_upgrade_with_app_file(fts_i2c_client, upgrade_file_path);
+			enable_irq(IRQ number ???);
+			if (ret < 0) {
+				printk("%s[FTS][CAP]:upgrade failed.\n", __func__);
+				return ret;
+			}*/
+//#endif
+		}		
+		break;
+	case PROC_READ_REGISTER:
+		writelen = 1;
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	case PROC_WRITE_REGISTER:
+		writelen = 2;
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	case PROC_AUTOCLB:
+		printk("%s[FTS][CAP]: autoclb, not need to do this for FT3267\n", __func__);
+		//not need to do this
+		//fts_ctpm_auto_clb(fts_i2c_client);
+		break;
+	case PROC_READ_DATA:
+	case PROC_WRITE_DATA:
+		writelen = len - 1;
+		//change to your i2c write function
+		ret = FTS_I2c_Write(writebuf + 1, writelen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:write iic error\n", __func__);
+			return ret;
+		}
+		break;
+	default:
+		break;
+	}
+	
+
+	return len;
+}
+
+/*interface of read proc*/
+/************************************************************************
+*   Name: fts_debug_read
+*  Brief:interface of read proc
+* Input: point to the data, no use, no use, read len, no use, no use 
+* Output: page point to data
+* Return: read char number
+***********************************************************************/
+static int fts_debug_read( char *page, char **start,
+	off_t off, int count, int *eof, void *data )
+{
+	int ret = 0;
+	unsigned char buf[READ_BUF_SIZE];
+	int num_read_chars = 0;
+	int readlen = 0;
+	u8 regvalue = 0x00, regaddr = 0x00;
+	
+    printk("%s enter\n", __fuc__);
+    printk("%s proc_operate_mode = %d\n", __fuc__, proc_operate_mode);
+	switch (proc_operate_mode) {
+	case PROC_UPGRADE:
+		//after calling fts_debug_write to upgrade
+		regaddr = 0xA6;
+		//change to your i2c read function
+		ret = fts_read_reg(regaddr, &regvalue);
+		if (ret < 0)
+			num_read_chars = sprintf(buf, "%s", "get fw version failed.\n");
+		else
+			num_read_chars = sprintf(buf, "current fw version:0x%02x\n", regvalue);
+		break;
+	case PROC_READ_REGISTER:
+		readlen = 1;
+		//change to your i2c read function
+		ret = FTS_I2c_Read(NULL, 0, buf, readlen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:read iic error\n", __func__);
+			return ret;
+		} 
+		num_read_chars = 1;
+		break;
+	case PROC_READ_DATA:
+		readlen = count;
+		//change to your i2c read function
+		ret = FTS_I2c_Read(NULL, 0, buf, readlen);
+		if (ret < 0) {
+			printk("%s[FTS][CAP]:read iic error\n", __func__);
+			return ret;
+		}
+		
+		num_read_chars = readlen;
+		break;
+	case PROC_WRITE_DATA:
+		break;
+	default:
+		break;
+	}
+	
+	memcpy(page, buf, num_read_chars);
+	return num_read_chars;
+}
+#endif
+/************************************************************************
+* Name: fts_create_apk_debug_channel
+* Brief:  create apk debug channel
+* Input: i2c info
+* Output: no
+* Return: success =0
+***********************************************************************/
+int fts_create_apk_debug_channel(void)
+{	
+	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
+		fts_proc_entry = proc_create(PROC_NAME, 0777, NULL, &fts_proc_fops);		
+	#else
+		fts_proc_entry = create_proc_entry(PROC_NAME, 0777, NULL);
+	#endif
+	if (NULL == fts_proc_entry) 
+	{
+		printk("%s[FTS][CAP] Couldn't create proc entry!\n",__func__);
+		
+		return -ENOMEM;
+	} 
+	else 
+	{
+		printk("%s[FTS][CAP] Create proc entry success!\n",__func__);
+		
+		#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
+			fts_proc_entry->write_proc = fts_debug_write;
+			fts_proc_entry->read_proc = fts_debug_read;
+		#endif
+	}
+	return 0;
+}
+/************************************************************************
+* Name: fts_release_apk_debug_channel
+* Brief:  release apk debug channel
+* Input: no
+* Output: no
+* Return: no
+***********************************************************************/
+void fts_release_apk_debug_channel(void)
+{
+	
+	if (fts_proc_entry)
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
+			proc_remove(fts_proc_entry);
+		#else
+			remove_proc_entry(NULL, fts_proc_entry);
+		#endif
+}
+//<ASUS_focal->
 
 static int synaptics_rmi4_probe(struct platform_device *pdev)
 {
-	int retval;
+	int retval, len;
+	int i;//<ASUS_focal+>
 	unsigned char attr_count;
 	struct synaptics_rmi4_data *rmi4_data;
 	const struct synaptics_dsx_hw_interface *hw_if;
 	const struct synaptics_dsx_board_data *bdata;
-
+	struct dentry *temp;
+	u8 regaddr=0x9F,regvalue=0xff;//<ASUS_cap_sensor+>
+	unsigned char buf_val[2]={0}; //<ASUS_bootmode+>
+	
+	printk("[Angel Touch] start\n");
+	printk("%s: start\n", __func__);
 	hw_if = pdev->dev.platform_data;
 	if (!hw_if) {
 		dev_err(&pdev->dev,
@@ -3950,20 +6811,36 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	rmi4_data->pdev = pdev;
 	rmi4_data->current_page = MASK_8BIT;
 	rmi4_data->hw_if = hw_if;
+	rmi4_data->touch_stopped = false;
 	rmi4_data->suspend = false;
 	rmi4_data->irq_enabled = false;
 	rmi4_data->fingers_on_2d = false;
-
+	rmi4_data->usb_status = 0;
+	
 	rmi4_data->reset_device = synaptics_rmi4_reset_device;
 	rmi4_data->irq_enable = synaptics_rmi4_irq_enable;
 	rmi4_data->sleep_enable = synaptics_rmi4_sleep_enable;
-	rmi4_data->report_touch = synaptics_rmi4_report_touch;
 
 	mutex_init(&(rmi4_data->rmi4_reset_mutex));
 	mutex_init(&(rmi4_data->rmi4_report_mutex));
 	mutex_init(&(rmi4_data->rmi4_io_ctrl_mutex));
 	mutex_init(&(rmi4_data->rmi4_exp_init_mutex));
+	mutex_init(&(rmi4_data->cap_mutex));
+	mutex_init(&(rmi4_data->rmi4_fw_mutex));
 
+	retval = synaptics_dsx_regulator_configure(rmi4_data);
+	if (retval) {
+		dev_err(&pdev->dev,
+			"%s: regulator configuration failed\n", __func__);
+		goto err_get_reg;
+	}
+	retval = synaptics_dsx_regulator_enable(rmi4_data, true);
+	if (retval) {
+		dev_err(&pdev->dev,
+			"%s: regulator enable failed\n", __func__);
+		goto err_regulator_enable;
+	}
+	
 	platform_set_drvdata(pdev, rmi4_data);
 
 	vir_button_map = bdata->vir_button_map;
@@ -3985,20 +6862,22 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	}
 
 	retval = synaptics_dsx_pinctrl_init(rmi4_data);
-	if (!retval && rmi4_data->ts_pinctrl) {
-		/*
-		* Pinctrl handle is optional. If pinctrl handle is found
-		* let pins to be configured in active state. If not
-		* found continue further without error.
-		*/
-		retval = pinctrl_select_state(rmi4_data->ts_pinctrl,
-		rmi4_data->pinctrl_state_active);
-		if (retval < 0) {
-			dev_err(&pdev->dev,
-				"%s: Failed to select %s pinstate %d\n",
-				__func__, PINCTRL_STATE_ACTIVE, retval);
+		if (!retval && rmi4_data->ts_pinctrl) {
+			/*
+			* Pinctrl handle is optional. If pinctrl handle is found
+			* let pins to be configured in active state. If not
+			* found continue further without error.
+			*/
+			retval = pinctrl_select_state(rmi4_data->ts_pinctrl,
+					rmi4_data->pinctrl_state_active);
+			if (retval < 0) {
+				dev_err(&pdev->dev,
+					"%s: Failed to select %s pinstate %d\n",
+					__func__, PINCTRL_STATE_ACTIVE, retval);
+			}
 		}
-	}
+	
+	printk("%s irq gpio =%d, reset gpio =%d\n", __func__,  bdata->irq_gpio, bdata->reset_gpio);
 	retval = synaptics_rmi4_set_gpio(rmi4_data);
 	if (retval < 0) {
 		dev_err(&pdev->dev,
@@ -4007,6 +6886,7 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		goto err_set_gpio;
 	}
 
+	
 	if (hw_if->ui_hw_init) {
 		retval = hw_if->ui_hw_init(rmi4_data);
 		if (retval < 0) {
@@ -4017,6 +6897,17 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		}
 	}
 
+	printk("[synaptics] %s fw name = %s\n", __func__, bdata->fw_name);
+	if (bdata->fw_name) {
+		len = strlen(bdata->fw_name);
+		if (len > SYNA_FW_NAME_MAX_LEN - 1) {
+			dev_err(&pdev->dev, "Invalid firmware name\n");
+			goto err_set_input_dev;
+		}
+
+		strlcpy(rmi4_data->fw_name, bdata->fw_name, len + 1);
+	}
+	
 	retval = synaptics_rmi4_set_input_dev(rmi4_data);
 	if (retval < 0) {
 		dev_err(&pdev->dev,
@@ -4025,9 +6916,47 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		goto err_set_input_dev;
 	}
 
+	//<ASUS_cap_sensor+>
+	//<ASUS_focal+>
+	for(i=0; i<5; i++) {
+		retval = cap_i2c_Read(rmi4_data, &regaddr, 1, &regvalue, 1);
+		printk("%s [FTS][cap]retval = %d, regvalue =0x%02x\n", __func__, retval, regvalue);
+	}
+	if(retval > 0) {
+		cap_sel_status = 1;
+	}
+    
+	regaddr = 0x01;
+	cap_addr = CAP_I2C_ADDR;
+	for(i=0; i<5; i++) {
+		retval = cap_i2c_Read(rmi4_data, &regaddr, 1, &regvalue, 1);
+		printk("%s [cap]retval = %d, regvalue =0x%02x\n", __func__, retval, regvalue);
+	}
+	if(retval > 0) {
+		cap_sel_status = 0;
+	}
+
+	if(cap_sel_status == 1) {
+		init_i2c_read_func(FTS_I2c_Read);
+		init_i2c_write_func(FTS_I2c_Write);
+		cap_addr = FTS_CAP_I2C_ADDR;
+		fts_a5_flag = 0;
+		regaddr = 0xa6;
+		retval = cap_i2c_Read(rmi4_data, &regaddr, 1, &regvalue, 1);
+		if(retval < 0)
+			printk("%s [FTS][cap]retval = %d, regvalue =0x%02x\n", __func__, retval, regvalue);
+		printk("%s [fts] cap fw version = 0x%02x\n", __func__, regvalue);
+		rmi4_data->cap_fw_id = regvalue;
+	}
+	else if(cap_sel_status == 0){
+		cap_addr = CAP_I2C_ADDR;
+		rmi4_data->cap_fw_id = 0x88;
+	}
+	printk("%s [cap] cap_sel_status = %d, cap_addr = 0x%02x\n", __func__, cap_sel_status, cap_addr);
+	//<ASUS_focal->
+	//<ASUS_cap_sensor->
+
 #ifdef CONFIG_FB
-	INIT_WORK(&rmi4_data->fb_notify_work,
-		  synaptics_rmi4_fb_notify_resume_work);
 	rmi4_data->fb_notifier.notifier_call = synaptics_rmi4_fb_notifier_cb;
 	retval = fb_register_client(&rmi4_data->fb_notifier);
 	if (retval < 0) {
@@ -4049,7 +6978,7 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		INIT_LIST_HEAD(&exp_data.list);
 		exp_data.initialized = true;
 	}
-
+	
 	rmi4_data->irq = gpio_to_irq(bdata->irq_gpio);
 
 	retval = synaptics_rmi4_irq_enable(rmi4_data, true, false);
@@ -4060,6 +6989,93 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		goto err_enable_irq;
 	}
 
+	//<ASUS_led+>
+#ifdef ASUS_FACTORY_BUILD
+	printk("cap led start");
+	rmi4_data->led_wq = create_singlethread_workqueue("led_wq");
+	if (!rmi4_data->led_wq) 
+	{
+		printk(KERN_ERR "\n[synaptics] %s: create led workqueue failed\n", __func__);		
+		goto err_cap_sensor;
+	}
+	INIT_DELAYED_WORK(&rmi4_data->led_delay_work, led_delay_work_func);
+	printk("\n[synaptics] Create delay workqueue success\n");
+	printk("cap led end");
+#endif
+	//<ASUS_led->
+
+	//<ASUS_usb_cable_status+>
+	printk("[synaptics]:create usb cable detect workqueue\n");
+	rmi4_data->usb_wq = create_singlethread_workqueue("synaptics_usb_wq");
+	if (!rmi4_data->usb_wq) 
+	{
+		printk(KERN_ERR "\n [synaptics] %s: create usb cable detect workqueue failed\n", __func__);		
+		goto err_cap_sensor;
+	}
+	INIT_WORK(&rmi4_data->usb_detect_work, synaptics_cable_statue);
+	printk("[synaptics]:create usb cable detect workqueue success\n");
+	//<ASUS_usb_cable_status->
+
+	//<ASUS_cap_sensor+>
+	if(cap_sel_status == 0) {
+		printk("cap sensor start\n");
+		rmi4_data->cap_wq = create_singlethread_workqueue("cap_wq");
+		if (!rmi4_data->cap_wq) {
+			printk(KERN_ERR "\n [cap] %s: create cap_sensor workqueue failed\n", __func__);
+			goto err_cap_sensor;
+		}
+		INIT_WORK(&rmi4_data->cap_work, cap_work_func);
+
+		printk("\n [cap] %s: Create cap_sensor workqueue success\n", __func__);
+
+		retval = request_threaded_irq(CAP_INT_GET_PIN(CAP_INT_PIN), NULL, cap_sensor_interrupt,
+						IRQF_TRIGGER_FALLING | IRQF_ONESHOT, PLATFORM_DRIVER_NAME, rmi4_data);
+		if (retval < 0) {
+			dev_err(&pdev->dev, "[cap]: cap-sensor request irq failed\n");
+			goto err_cap_sensor;
+		}
+		printk("\n [cap] %s: request cap_sensor irq success\n", __func__);
+		cap_sensor_reg_init(rmi4_data);
+        
+		//<ASUS_cap_calibration+>
+		/*printk("cap sensor calibration start\n");
+		rmi4_data->cap_cal_wq = create_singlethread_workqueue("cap_cal_wq");
+		if (!rmi4_data->cap_cal_wq) {
+			printk(KERN_ERR "\n [cap] %s: create cap_sensor calibration workqueue failed\n", __func__);
+			goto err_cap_sensor;
+		}
+		INIT_DELAYED_WORK(&rmi4_data->calibration_work, calibration_work_function);*/
+		//<ASUS_cap_calibration->
+	}
+	else if(cap_sel_status == 1) {
+        //<ASUS_focal+>
+		INIT_WORK(&rmi4_data->fts_touch_event_work, fts_touch_irq_work);
+		rmi4_data->fts_workqueue = create_workqueue(FTS_WORKQUEUE_NAME);
+		if (!rmi4_data->fts_workqueue)
+		{
+			printk(KERN_ERR "\n [FTS] %s: create fts cap workqueue failed\n", __func__);
+			goto err_cap_sensor;
+		}
+
+		retval = request_threaded_irq(CAP_INT_GET_PIN(CAP_INT_PIN), NULL, fts_ts_interrupt,
+					IRQF_ONESHOT | IRQF_TRIGGER_FALLING, PLATFORM_DRIVER_NAME, rmi4_data);
+		if (retval < 0) {
+			dev_err(&pdev->dev, "[FTS]: cap-sensor request irq failed\n");
+			goto err_cap_sensor;
+		}
+		fts_create_apk_debug_channel();
+		rmi4_data->fts_glove_wq = create_singlethread_workqueue("fts_glove_wq");
+		if (!rmi4_data->fts_glove_wq) {
+			printk(KERN_ERR "\n%s [FTS]: create fts glove workqueue failed\n", __func__);
+			goto err_cap_sensor;
+		}
+		INIT_DELAYED_WORK(&rmi4_data->fts_glove_delay_work, fts_glove_delay_work_func);
+	}
+
+err_cap_sensor:
+	//<ASUS_focal->
+	//<ASUS_cap_sensor->
+	
 	if (vir_button_map->nbuttons) {
 		rmi4_data->board_prop_dir = kobject_create_and_add(
 				"board_properties", NULL);
@@ -4093,58 +7109,123 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 
 	rmi4_data->rb_workqueue =
 			create_singlethread_workqueue("dsx_rebuild_workqueue");
-	if (!rmi4_data->rb_workqueue) {
-		retval = -ENOMEM;
-		goto err_rb_workqueue;
-	}
 	INIT_DELAYED_WORK(&rmi4_data->rb_work, synaptics_rmi4_rebuild_work);
 
 	exp_data.workqueue = create_singlethread_workqueue("dsx_exp_workqueue");
-	if (!exp_data.workqueue) {
-		retval = -ENOMEM;
-		goto err_exp_data_workqueue;
-	}
 	INIT_DELAYED_WORK(&exp_data.work, synaptics_rmi4_exp_fn_work);
 	exp_data.rmi4_data = rmi4_data;
 	exp_data.queue_work = true;
-	queue_delayed_work(exp_data.workqueue, &exp_data.work, 0);
+	queue_delayed_work(exp_data.workqueue,
+			&exp_data.work,
+			0);
+	
+	rmi4_data->dir = debugfs_create_dir(DEBUGFS_DIR_NAME, NULL);
+	if (rmi4_data->dir == NULL || IS_ERR(rmi4_data->dir)) {
+		retval = rmi4_data->dir ? PTR_ERR(rmi4_data->dir) : -EIO;
+		dev_err(&pdev->dev,
+			"%s: Failed to create debugfs directory, rc = %d\n",
+			__func__, retval);
+		goto err_create_debugfs_dir;
+	}
+
+	temp = debugfs_create_file("suspend", S_IRUSR | S_IWUSR, rmi4_data->dir,
+					rmi4_data, &debug_suspend_fops);
+	if (temp == NULL || IS_ERR(temp)) {
+		retval = temp ? PTR_ERR(temp) : -EIO;
+		dev_err(&pdev->dev,
+			"%s: Failed to create suspend debugfs file, rc = %d\n",
+			__func__, retval);
+		goto err_create_debugfs_file;
+	}
 
 #ifdef FB_READY_RESET
 	rmi4_data->reset_workqueue =
 			create_singlethread_workqueue("dsx_reset_workqueue");
-	if (!rmi4_data->reset_workqueue) {
-		retval = -ENOMEM;
-		goto err_reset_workqueue;
-	}
 	INIT_WORK(&rmi4_data->reset_work, synaptics_rmi4_reset_work);
 	queue_work(rmi4_data->reset_workqueue, &rmi4_data->reset_work);
 #endif
 
-	/* Initialize secure touch */
-	synaptics_secure_touch_init(rmi4_data);
-	synaptics_secure_touch_stop(rmi4_data, true);
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+	tp_proximity_proc = proc_create(PROXIMITY_NAME, 0664, NULL, &tp_proximity_proc_fops);
+#else
+	tp_proximity_proc = create_proc_entry(PROXIMITY_NAME, 0664, NULL);
+#endif
+	if (!tp_proximity_proc) {
+		dev_err(&pdev->dev,
+				"%s: Failed to create proc proximity node\n",
+				__func__);
+		goto err_sysfs;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
+	} else {
+		tp_proximity_proc->write_proc = tp_proximity_proc_write;
+		tp_proximity_proc->read_proc = tp_proximity_proc_read;
+		tp_proximity_proc->data = NULL;
+#endif
+	}
+#endif
+//<ASUS_Proximity->
 
+	//<ASUS_SDev+>
+	rmi4_data->touch_sdev.name = "touch";
+	rmi4_data->touch_sdev.print_name = touch_switch_name;
+	if(switch_dev_register(&rmi4_data->touch_sdev) < 0){
+		printk("switch_dev_register failed!\n");
+	}
+	//<ASUS_SDev->
+	
+	//ASUS_FACTORY+
+	#if defined(ASUS_FACTORY_BUILD)
+	if(create_asusproc_tp_status_entry())
+		printk("[%s] : ERROR to create tp proc entry\n",__func__);
+	#endif
+	//ASUS_FACTORY-
+	
+	//add global variable gb_rmi4_data for checking usb_cable_status
+	gb_rmi4_data = rmi4_data;
+
+	//queue_delayed_work(rmi4_data->cap_cal_wq, &rmi4_data->calibration_work, msecs_to_jiffies(60000));
+	printk("%s: end\n", __func__);
+    
+    //<ASUS_bootmode+>
+    if (strcmp(androidboot_mode,"charger")==0) {
+		printk("[Power] %s: skip this driver in charger mode\n", __func__);
+        synaptics_rmi4_sleep_enable(rmi4_data, true);
+        disable_irq(rmi4_data->irq);
+        fts_a5_flag = 1;
+        buf_val[0] = 0xa5;
+        buf_val[1] = 0x03;
+        retval = cap_i2c_write(rmi4_data, buf_val, 2);        
+        if(retval < 0){
+            printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+            fts_a5_flag = 0;
+        }
+        disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));        
+		return 0;
+	}
+    //<ASUS_bootmode->
+    
 	return retval;
 
-#ifdef FB_READY_RESET
-err_reset_workqueue:
-#endif
-	cancel_delayed_work_sync(&exp_data.work);
-	flush_workqueue(exp_data.workqueue);
-	destroy_workqueue(exp_data.workqueue);
-
-err_exp_data_workqueue:
-	cancel_delayed_work_sync(&rmi4_data->rb_work);
-	flush_workqueue(rmi4_data->rb_workqueue);
-	destroy_workqueue(rmi4_data->rb_workqueue);
-
-err_rb_workqueue:
 err_sysfs:
 	for (attr_count--; attr_count >= 0; attr_count--) {
 		sysfs_remove_file(&rmi4_data->input_dev->dev.kobj,
 				&attrs[attr_count].attr);
 	}
 
+err_create_debugfs_file:
+	debugfs_remove_recursive(rmi4_data->dir);
+
+err_create_debugfs_dir:
+	cancel_delayed_work_sync(&exp_data.work);
+	if (exp_data.workqueue != NULL) {
+		flush_workqueue(exp_data.workqueue);
+		destroy_workqueue(exp_data.workqueue);
+	}
+	synaptics_rmi4_irq_enable(rmi4_data, false, false);
+	free_irq(rmi4_data->irq, rmi4_data);
+	
 err_virtual_buttons:
 	if (rmi4_data->board_prop_dir) {
 		sysfs_remove_file(rmi4_data->board_prop_dir,
@@ -4183,15 +7264,14 @@ err_set_input_dev:
 err_ui_hw_init:
 err_set_gpio:
 	synaptics_rmi4_enable_reg(rmi4_data, false);
-
 	if (rmi4_data->ts_pinctrl) {
 		if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_release)) {
 			devm_pinctrl_put(rmi4_data->ts_pinctrl);
 			rmi4_data->ts_pinctrl = NULL;
 		} else {
 			retval = pinctrl_select_state(
-			rmi4_data->ts_pinctrl,
-			rmi4_data->pinctrl_state_release);
+				rmi4_data->ts_pinctrl,
+				rmi4_data->pinctrl_state_release);
 			if (retval)
 				dev_err(&pdev->dev,
 					"%s: Failed to create sysfs attributes\n",
@@ -4202,6 +7282,10 @@ err_set_gpio:
 err_enable_reg:
 	synaptics_rmi4_get_reg(rmi4_data, false);
 
+err_regulator_enable:
+	regulator_put(rmi4_data->regulator_vdd);
+	regulator_put(rmi4_data->regulator_avdd);
+	
 err_get_reg:
 	kfree(rmi4_data);
 
@@ -4210,8 +7294,8 @@ err_get_reg:
 
 static int synaptics_rmi4_remove(struct platform_device *pdev)
 {
-	unsigned char attr_count;
 	int err;
+	unsigned char attr_count;
 	struct synaptics_rmi4_data *rmi4_data = platform_get_drvdata(pdev);
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
@@ -4229,6 +7313,33 @@ static int synaptics_rmi4_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&rmi4_data->rb_work);
 	flush_workqueue(rmi4_data->rb_workqueue);
 	destroy_workqueue(rmi4_data->rb_workqueue);
+	
+	//<ASUS_led+>
+	#ifdef ASUS_FACTORY_BUILD
+	cancel_delayed_work_sync(&rmi4_data->led_delay_work);
+	flush_workqueue(rmi4_data->led_wq);
+	destroy_workqueue(rmi4_data->led_wq);
+	#endif
+	//<ASUS_led->
+	
+	//<ASUS_usb_cable_status+>
+	flush_workqueue(rmi4_data->usb_wq);
+	destroy_workqueue(rmi4_data->usb_wq);
+	//<ASUS_usb_cable_status->
+	
+	//<ASUS_cap_sensor+>
+	flush_workqueue(rmi4_data->cap_wq);
+	destroy_workqueue(rmi4_data->cap_wq);
+	//<ASUS_cap_sensor->
+    
+    //<ASUS_focal+>
+    flush_workqueue(rmi4_data->fts_workqueue);
+	destroy_workqueue(rmi4_data->fts_workqueue);
+    fts_release_apk_debug_channel();
+    
+    flush_workqueue(rmi4_data->fts_glove_wq);
+	destroy_workqueue(rmi4_data->fts_glove_wq);
+    //<ASUS_focal->
 
 	for (attr_count = 0; attr_count < ARRAY_SIZE(attrs); attr_count++) {
 		sysfs_remove_file(&rmi4_data->input_dev->dev.kobj,
@@ -4267,24 +7378,33 @@ static int synaptics_rmi4_remove(struct platform_device *pdev)
 	if (bdata->power_gpio >= 0)
 		synaptics_rmi4_gpio_setup(bdata->power_gpio, false, 0, 0);
 
-
-	if (rmi4_data->ts_pinctrl) {
-		if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_release)) {
-			devm_pinctrl_put(rmi4_data->ts_pinctrl);
-			rmi4_data->ts_pinctrl = NULL;
-		} else {
-			err = pinctrl_select_state(
-			rmi4_data->ts_pinctrl,
-			rmi4_data->pinctrl_state_release);
-			if (err)
-				dev_err(&pdev->dev,
-					"Failed to select release pinctrl state %d\n",
-					err);
-		}
-	}
-
 	synaptics_rmi4_enable_reg(rmi4_data, false);
 	synaptics_rmi4_get_reg(rmi4_data, false);
+	
+	if (rmi4_data->ts_pinctrl) {
+			if (IS_ERR_OR_NULL(rmi4_data->pinctrl_state_release)) {
+				devm_pinctrl_put(rmi4_data->ts_pinctrl);
+				rmi4_data->ts_pinctrl = NULL;
+			} else {
+				err = pinctrl_select_state(
+					rmi4_data->ts_pinctrl,
+					rmi4_data->pinctrl_state_release);
+				if (err)
+					dev_err(&pdev->dev,
+						"Failed to select release pinctrl state %d\n",
+						err);
+			}
+		}
+		
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+	proc_remove(tp_proximity_proc);
+#else
+	remove_proc_entry(PROXIMITY_NAME, NULL);
+#endif
+#endif
+//<ASUS_Proximity->
 
 	kfree(rmi4_data);
 
@@ -4399,14 +7519,6 @@ static void synaptics_rmi4_wakeup_gesture(struct synaptics_rmi4_data *rmi4_data,
 }
 
 #ifdef CONFIG_FB
-static void synaptics_rmi4_fb_notify_resume_work(struct work_struct *work)
-{
-	struct synaptics_rmi4_data *rmi4_data =
-		container_of(work, struct synaptics_rmi4_data, fb_notify_work);
-	synaptics_rmi4_resume(&(rmi4_data->input_dev->dev));
-	rmi4_data->fb_ready = true;
-}
-
 static int synaptics_rmi4_fb_notifier_cb(struct notifier_block *self,
 		unsigned long event, void *data)
 {
@@ -4417,37 +7529,27 @@ static int synaptics_rmi4_fb_notifier_cb(struct notifier_block *self,
 			fb_notifier);
 
 	if (evdata && evdata->data && rmi4_data) {
-		if (rmi4_data->hw_if->board_data->resume_in_workqueue) {
-			if (event == FB_EARLY_EVENT_BLANK) {
-				synaptics_secure_touch_stop(rmi4_data, false);
-			} else if (event == FB_EVENT_BLANK) {
-				transition = evdata->data;
-				if (*transition == FB_BLANK_POWERDOWN) {
-					flush_work(
-						&(rmi4_data->fb_notify_work));
-					synaptics_rmi4_suspend(
-						&rmi4_data->pdev->dev);
-					rmi4_data->fb_ready = false;
-				} else if (*transition == FB_BLANK_UNBLANK) {
-					schedule_work(
-						&(rmi4_data->fb_notify_work));
-				}
-			}
-		} else {
-			if (event == FB_EARLY_EVENT_BLANK) {
-				synaptics_secure_touch_stop(rmi4_data, false);
-			} else if (event == FB_EVENT_BLANK) {
-				transition = evdata->data;
-				if (*transition == FB_BLANK_POWERDOWN) {
-					synaptics_rmi4_suspend(
-						&rmi4_data->pdev->dev);
-					rmi4_data->fb_ready = false;
-				} else if (*transition == FB_BLANK_UNBLANK) {
-					synaptics_rmi4_resume(
-						&rmi4_data->pdev->dev);
+		if (event == FB_EVENT_BLANK) {
+			transition = evdata->data;
+			if (*transition == FB_BLANK_POWERDOWN) {
+				//printk(KERN_EMERG "%s FB_BLANK_POWERDOWN\n", __func__);
+				synaptics_rmi4_suspend(&rmi4_data->pdev->dev);
+				rmi4_data->fb_ready = false;
+				screen_flag=0;
+			} else if (*transition == FB_BLANK_UNBLANK) {
+				//printk(KERN_EMERG "%s FB_BLANK_UNBLANK\n", __func__);
+				if (fw_update_state == 1) {
+				} else {
+					synaptics_rmi4_resume(&rmi4_data->pdev->dev);
 					rmi4_data->fb_ready = true;
+					screen_flag=1;
 				}
-			}
+			} else if (*transition == FB_BLANK_NORMAL) {
+				//printk(KERN_EMERG "%s FB_BLANK_NORMAL\n", __func__);
+                synaptics_rmi4_suspend(&rmi4_data->pdev->dev);
+                rmi4_data->fb_ready = false;
+				screen_flag=0;
+            }
 		}
 	}
 
@@ -4466,20 +7568,13 @@ static void synaptics_rmi4_early_suspend(struct early_suspend *h)
 	if (rmi4_data->stay_awake)
 		return;
 
-	/*
-	 * During early suspend/late resume, the driver doesn't access xPU/SMMU
-	 * protected HW resources. So, there is no compelling need to block,
-	 * but notifying the userspace that a power event has occurred is
-	 * enough. Hence 'blocking' variable can be set to false.
-	 */
-	synaptics_secure_touch_stop(rmi4_data, false);
-
 	if (rmi4_data->enable_wakeup_gesture) {
 		synaptics_rmi4_wakeup_gesture(rmi4_data, true);
 		enable_irq_wake(rmi4_data->irq);
 		goto exit;
 	}
 
+	rmi4_data->touch_stopped = true;
 	synaptics_rmi4_irq_enable(rmi4_data, false, false);
 	synaptics_rmi4_sleep_enable(rmi4_data, true);
 	synaptics_rmi4_free_fingers(rmi4_data);
@@ -4510,8 +7605,6 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 
 	if (rmi4_data->stay_awake)
 		return;
-
-	synaptics_secure_touch_stop(rmi4_data, false);
 
 	if (rmi4_data->enable_wakeup_gesture) {
 		synaptics_rmi4_wakeup_gesture(rmi4_data, false);
@@ -4545,6 +7638,7 @@ exit:
 	}
 	mutex_unlock(&exp_data.mutex);
 
+	rmi4_data->touch_stopped = false;
 	rmi4_data->suspend = false;
 
 	return;
@@ -4553,34 +7647,90 @@ exit:
 
 static int synaptics_rmi4_suspend(struct device *dev)
 {
+	int retval,i;
 	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-	int retval;
+	unsigned char buf_val[2]={0};
+	unsigned char buf_reg[]={0x02, 0x03, 0x04, 0x05, 0x06};
+	unsigned char buf_reg_val[]={0xFF, 0xFF, 0xFF, 0x00, 0x01};
+	
+    if (strcmp(androidboot_mode,"charger")==0) {
+		printk("[Power] %s: skip this driver in charger mode\n", __func__);
+		return 0;
+	}
 
+    printk("%s suspend start\n", __func__);
+
+    if(rmi4_data->suspend) {
+	    printk("[Touch] %s : already suspend !!!!!!!!!!\n", __func__);
+	    return 0;
+    }
+
+    if (rmi4_data->enable_wakeup_gesture && ((dclick_mode == 1) || (swipe_mode == 1) || (gesture_mode & GESTURE_SWITCH))) {//<ASUS_DTP+>
+        synaptics_rmi4_sw_reset(rmi4_data);
+    }
+
+    /*if(rmi4_data->suspend) {
+        if (rmi4_data->enable_wakeup_gesture && ((dclick_mode == 1) || (swipe_mode == 1) || (gesture_mode & GESTURE_SWITCH))) {//<ASUS_DTP+>
+            printk("%s gesture suspend again\n", __func__);
+            synaptics_rmi4_free_fingers(rmi4_data);
+            synaptics_rmi4_sleep_enable(rmi4_data, true);
+            synaptics_rmi4_wakeup_gesture(rmi4_data, true);
+            enable_irq_wake(rmi4_data->irq);
+            goto exit;
+        }
+        return 0;
+    }*/
+
+    //<ASUS_cap_sensor+>
+    //<ASUS_focal+>    
+	if(cap_sel_status == 0) {
+        printk("%s [cap] Disable cap_button virtualkey\n", __func__);
+        disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+        
+        for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+            buf_val[0] = buf_reg[i];
+            buf_val[1] = buf_reg_val[i];
+            retval = cap_i2c_write(rmi4_data, buf_val, 2);
+            if(retval < 0){
+                printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+            }
+            //printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+        }
+    }else if(cap_sel_status == 1) {
+        printk("%s [FTS] Disable cap_button virtualkey\n", __func__);
+        disable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+    }
+    //<ASUS_cap_sensor->
+    //<ASUS_focal->
+	
 	if (rmi4_data->stay_awake)
 		return 0;
 
-	synaptics_secure_touch_stop(rmi4_data, true);
-
-	if (rmi4_data->enable_wakeup_gesture) {
+	if (rmi4_data->enable_wakeup_gesture && ((dclick_mode == 1) || (swipe_mode == 1) || (gesture_mode & GESTURE_SWITCH))) {//<ASUS_DTP+>
+		//printk("%s gesture suspend\n", __func__);
+        synaptics_rmi4_free_fingers(rmi4_data);
+		synaptics_rmi4_sleep_enable(rmi4_data, true);        
 		synaptics_rmi4_wakeup_gesture(rmi4_data, true);
 		enable_irq_wake(rmi4_data->irq);
 		goto exit;
 	}
-
+		
 	if (!rmi4_data->suspend) {
+		if (rmi4_data->ts_pinctrl) {
+		retval = pinctrl_select_state(rmi4_data->ts_pinctrl,
+				rmi4_data->pinctrl_state_suspend);
+		if (retval < 0) {
+			dev_err(dev, "Cannot get idle pinctrl state\n");
+			goto err_pinctrl_select_suspend;
+		}
+		}
+		rmi4_data->touch_stopped = true;
 		synaptics_rmi4_irq_enable(rmi4_data, false, false);
 		synaptics_rmi4_sleep_enable(rmi4_data, true);
 		synaptics_rmi4_free_fingers(rmi4_data);
 	}
 
-	if (rmi4_data->ts_pinctrl) {
-		retval = pinctrl_select_state(rmi4_data->ts_pinctrl,
-		rmi4_data->pinctrl_state_suspend);
-		if (retval < 0)
-			dev_err(dev, "Cannot get idle pinctrl state\n");
-			goto err_pinctrl;
-	}
 exit:
 	mutex_lock(&exp_data.mutex);
 	if (!list_empty(&exp_data.list)) {
@@ -4590,19 +7740,34 @@ exit:
 	}
 	mutex_unlock(&exp_data.mutex);
 
-	if (!rmi4_data->suspend) {
-		synaptics_rmi4_enable_reg(rmi4_data, false);
-		synaptics_rmi4_get_reg(rmi4_data, false);
-	}
 	rmi4_data->suspend = true;
-
+	
+    mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
+    if(cap_sel_status == 1) {        
+        fts_a5_flag = 1;
+        buf_val[0] = 0xa5;
+        buf_val[1] = 0x03;
+        retval = cap_i2c_write(rmi4_data, buf_val, 2);        
+        if(retval < 0){
+            printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+            fts_a5_flag = 0;
+        }
+        msleep(20);
+    }
+    mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+    printk("%s suspend end\n", __func__);
+    
 	return 0;
-
-err_pinctrl:
-	synaptics_rmi4_sleep_enable(rmi4_data, false);
-	synaptics_rmi4_irq_enable(rmi4_data, true, false);
+	
+err_pinctrl_select_suspend:
+//reserved vdd and avdd power regulator
+	if (rmi4_data->sensor_sleep) {
+		synaptics_rmi4_sleep_enable(rmi4_data, false);
+		synaptics_rmi4_irq_enable(rmi4_data, true, true);
+		rmi4_data->touch_stopped = false;
+	}
+	
 	return retval;
-
 }
 
 static int synaptics_rmi4_resume(struct device *dev)
@@ -4610,15 +7775,163 @@ static int synaptics_rmi4_resume(struct device *dev)
 #ifdef FB_READY_RESET
 	int retval;
 #endif
+	int retval,i;
 	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+	unsigned char buf_val[2]={0};
+	unsigned char cap_read_addr = 0x00;
+	unsigned char cap_status = 0x00;
+	unsigned char buf_reg[]={0x06, 0x05, 0x02, 0x03, 0x04};
+	unsigned char buf_reg_val_ER[]={0x20, 0x07, 0x4b, 0x4b, 0x4b}; //ER parameter
+	unsigned char buf_reg_val_PR[]={0x20, 0x07, 0x4b, 0x4b, 0x4b}; //PR parameter
+	unsigned char buf_reg_val_PR_usb[] = {0x20, 0x07, 0x4c, 0x47, 0x40}; //usb parameter
+	unsigned char buf_reg_val_PR_glove[] = {0x29, 0x07, 0x3e, 0x3e, 0x3e}; //glove parameter
+	unsigned char buf_reg_val_PR_glove_usb[] = {0x29, 0x07, 0x3e, 0x3e, 0x3e}; //glove and usb parameter	
+	unsigned long onesec = msecs_to_jiffies(1500);
+
+	printk("[Touch] %s start!!!!!\n", __func__);
+	if (strcmp(androidboot_mode,"charger")==0) {
+		printk("[Power] %s: skip this driver in charger mode\n", __func__);
+		return 0;
+	}
+    
+	if(cap_sel_status == 0) {
+		printk("[Touch] cap_sel_status == 0 !!!!!\n");
+		printk("%s [cap] enable cap_button virtualkey\n", __func__);
+		if (asus_HW_ID == HW_ID_ER1) {
+			for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+				buf_val[0] = buf_reg[i];
+				buf_val[1] = buf_reg_val_ER[i];
+				retval = cap_i2c_write(rmi4_data, buf_val, 2);
+				if(retval < 0){
+					printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+				}
+				//printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+			}
+		}
+		else {
+			if (glove_mode == 1) {
+				if (rmi4_data->usb_status == 1) {
+					for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+						buf_val[0] = buf_reg[i];
+						buf_val[1] = buf_reg_val_PR_glove_usb[i];
+						retval = cap_i2c_write(rmi4_data, buf_val, 2);
+						if(retval < 0){
+							printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+						}
+						//printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+					}
+				}
+				else {
+					for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+						buf_val[0] = buf_reg[i];
+						buf_val[1] = buf_reg_val_PR_glove[i];
+						retval = cap_i2c_write(rmi4_data, buf_val, 2);
+						if(retval < 0){
+							printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+						}
+						//printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+					}
+				}
+			}
+			else {
+				if (rmi4_data->usb_status == 1){
+					for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+						buf_val[0] = buf_reg[i];
+						buf_val[1] = buf_reg_val_PR_usb[i];
+						retval = cap_i2c_write(rmi4_data, buf_val, 2);
+						if(retval < 0){
+							printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+						}
+						//printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+					}
+				}
+				else {
+					for(i=0; i<(sizeof(buf_reg)/sizeof(buf_reg[0])); i++) {
+						buf_val[0] = buf_reg[i];
+						buf_val[1] = buf_reg_val_PR[i];
+						retval = cap_i2c_write(rmi4_data, buf_val, 2);
+						if(retval < 0){
+							printk("[cap] write reg_addr=%d, retval =%d\n", buf_val[0], retval);
+						}
+						//printk("[cap] cap sensor write buf[0] =%x, buf[1]=%x\n", buf_val[0], buf_val[1]);
+					}
+				}
+			}
+		}
+		enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+	}
+	else if(cap_sel_status == 1) {
+		printk("[Touch] cap_sel_status == 1 !!!!!\n");
+		buf_val[0] = 0xa5;
+		buf_val[1] = 0x00;
+		retval = cap_i2c_write(rmi4_data, buf_val, 2);
+		if(retval < 0){
+			printk("[cap] write reg_addr=0x%02x, retval =%d\n", buf_val[0], retval);
+		}
+		msleep(5);
+		printk("%s [FTS] enable cap_button virtualkey\n", __func__);
+		fts_sw_reset(rmi4_data);
+		enable_irq(CAP_INT_GET_PIN(CAP_INT_PIN));
+	}
+
+	synaptics_rmi4_sw_reset(rmi4_data);
+
+	//calibration+
+	if(cap_sel_status == 0) {
+		cap_i2c_Read(rmi4_data, &cap_read_addr, 1, &cap_status, 1);
+		buf_val[0] = 0x06;
+		buf_val[1] = 0x0F;
+		if (glove_mode == 1) {
+			if (rmi4_data->usb_status == 1) {
+				//(glove, usb) = (1,1)
+				buf_val[1] = 0x29;
+			}
+			else {
+				//(glove, usb) = (1,0)
+				buf_val[1] = 0x29;
+			}
+		}
+		else {
+			if (rmi4_data->usb_status == 1) {
+				//(glove, usb) = (0,1)
+				buf_val[1] = 0x20;
+			}
+			else {
+				//(glove, usb) = (0,0)
+				buf_val[1] = 0x20;
+			}
+		}
+		if (buf_val == 0) {
+			retval = cap_i2c_write(rmi4_data, buf_val, 2);
+			printk("[cap] %s set sampling configuration write value=0x%x.\n", __func__, buf_val[1]);
+		}
+	}
+	//calibration-
+
+	//<ASUS_COVER+>
+	synaptics_rmi4_set_cover_param(rmi4_data);
+	//<ASUS_COVER->
+
+	//<ASUS_Glove+>
+	synaptics_rmi4_set_glove_param(rmi4_data);
+	if(cap_sel_status == 1) {
+		retval = work_busy(&rmi4_data->fts_glove_delay_work.work);
+		if(retval == WORK_BUSY_PENDING) {
+			cancel_delayed_work_sync(&rmi4_data->fts_glove_delay_work);
+		}
+		retval = queue_delayed_work(rmi4_data->fts_glove_wq, &rmi4_data->fts_glove_delay_work, onesec);
+		if(retval < 0)
+			printk("%s ret = %d glove delay queue failure\n", __func__, retval);
+	}
+	//<ASUS_Glove->
 
 	if (rmi4_data->stay_awake)
 		return 0;
 
-	synaptics_secure_touch_stop(rmi4_data, true);
-
-	if (rmi4_data->enable_wakeup_gesture) {
+	if (rmi4_data->enable_wakeup_gesture && ((dclick_mode == 1) || (swipe_mode == 1) || (gesture_mode & GESTURE_SWITCH))) {//<ASUS_DTP+>
+		//printk("%s gesture resume\n", __func__);
+		synaptics_rmi4_sleep_enable(rmi4_data, false);
 		synaptics_rmi4_wakeup_gesture(rmi4_data, false);
 		disable_irq_wake(rmi4_data->irq);
 		goto exit;
@@ -4626,19 +7939,16 @@ static int synaptics_rmi4_resume(struct device *dev)
 
 	rmi4_data->current_page = MASK_8BIT;
 
-	if(rmi4_data->suspend) {
-		synaptics_rmi4_get_reg(rmi4_data, true);
-		synaptics_rmi4_enable_reg(rmi4_data, true);
-	}
-
-	synaptics_rmi4_sleep_enable(rmi4_data, false);
-	synaptics_rmi4_irq_enable(rmi4_data, true, false);
 	if (rmi4_data->ts_pinctrl) {
 		retval = pinctrl_select_state(rmi4_data->ts_pinctrl,
-		rmi4_data->pinctrl_state_active);
+				rmi4_data->pinctrl_state_active);
 		if (retval < 0)
 			dev_err(dev, "Cannot get default pinctrl state\n");
 	}
+	synaptics_rmi4_sleep_enable(rmi4_data, false);
+	synaptics_rmi4_irq_enable(rmi4_data, true, false);
+
+	printk("[Touch] %s end!!!!!\n", __func__);
 
 exit:
 #ifdef FB_READY_RESET
@@ -4657,8 +7967,8 @@ exit:
 	}
 	mutex_unlock(&exp_data.mutex);
 
+	rmi4_data->touch_stopped = false;
 	rmi4_data->suspend = false;
-
 	return 0;
 }
 
@@ -4686,8 +7996,8 @@ static struct platform_driver synaptics_rmi4_driver = {
 static int __init synaptics_rmi4_init(void)
 {
 	int retval;
-
-	retval = synaptics_rmi4_bus_init_v26();
+	
+	retval = synaptics_rmi4_bus_init();
 	if (retval)
 		return retval;
 
@@ -4696,9 +8006,16 @@ static int __init synaptics_rmi4_init(void)
 
 static void __exit synaptics_rmi4_exit(void)
 {
+	//ASUS_FACTORY+
+	#if defined(ASUS_FACTORY_BUILD)
+	if (tp_entry)
+		remove_proc_entry("asus_tp_status", NULL);
+	#endif
+	//ASUS_FACTORY-
+
 	platform_driver_unregister(&synaptics_rmi4_driver);
 
-	synaptics_rmi4_bus_exit_v26();
+	synaptics_rmi4_bus_exit();
 
 	return;
 }

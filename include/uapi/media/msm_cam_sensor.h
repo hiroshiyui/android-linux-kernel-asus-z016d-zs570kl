@@ -18,7 +18,7 @@
 
 #define MAX_OIS_MOD_NAME_SIZE 32
 #define MAX_OIS_NAME_SIZE 32
-#define MAX_OIS_REG_SETTINGS 800
+#define MAX_OIS_REG_SETTINGS 1200
 
 #define MOVE_NEAR 0
 #define MOVE_FAR  1
@@ -368,6 +368,7 @@ enum msm_ois_cfg_type_t {
 	CFG_OIS_POWERUP,
 	CFG_OIS_CONTROL,
 	CFG_OIS_I2C_WRITE_SEQ_TABLE,
+	CFG_OIS_I2C_WRITE_MODE,
 };
 
 enum msm_ois_cfg_download_type_t {
@@ -377,6 +378,7 @@ enum msm_ois_cfg_download_type_t {
 
 enum msm_ois_i2c_operation {
 	MSM_OIS_WRITE = 0,
+	MSM_OIS_READ,
 	MSM_OIS_POLL,
 };
 

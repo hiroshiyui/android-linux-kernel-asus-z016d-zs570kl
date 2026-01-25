@@ -145,6 +145,15 @@ EXPORT_SYMBOL_GPL(static_key_initialized);
  * For ex. kdump situaiton where previous kernel has crashed, BIOS has been
  * skipped and devices will be in unknown state.
  */
+char lcd_unique_id[64] = {0};
+EXPORT_SYMBOL(lcd_unique_id);
+static int get_lcd_uniqueId(char *str)
+{
+	strncpy(lcd_unique_id, str, sizeof(lcd_unique_id));
+	printk("lcd_unique_id = %s\n ", lcd_unique_id);
+    return 0;
+}
+__setup("LCD_UNIQUE_ID=", get_lcd_uniqueId);
 unsigned int reset_devices;
 EXPORT_SYMBOL(reset_devices);
 
@@ -155,6 +164,29 @@ static int __init set_reset_devices(char *str)
 }
 
 __setup("reset_devices", set_reset_devices);
+
+int g_recovery_mode = 0;
+EXPORT_SYMBOL(g_recovery_mode);
+static int set_recovery_mode(char *str)
+{
+	if (!strcmp("recovery", str))
+		g_recovery_mode = 1;
+	else
+		g_recovery_mode = 0;
+	printk("androidboot.mode recovery is %d\n", g_recovery_mode);
+	return 0;
+}
+
+__setup("androidboot.mode=", set_recovery_mode);
+
+char evtlog_bootup_reason[50];
+EXPORT_SYMBOL(evtlog_bootup_reason);
+static int set_ASUSEvt_pon_reason(char *str)
+{
+	strcpy(evtlog_bootup_reason, str);
+	return 0;
+}
+__setup("androidboot.bootreason=", set_ASUSEvt_pon_reason);
 
 static const char *argv_init[MAX_INIT_ARGS+2] = { "init", NULL, };
 const char *envp_init[MAX_INIT_ENVS+2] = { "HOME=/", "TERM=linux", NULL, };
@@ -969,6 +1001,8 @@ static int __ref kernel_init(void *unused)
 	numa_default_policy();
 
 	flush_delayed_fput();
+
+	pr_info("bootprof: Kernel_init_done\n");
 
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);

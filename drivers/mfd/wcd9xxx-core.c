@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -69,6 +69,13 @@
 #define REG_BYTES 2
 #define VAL_BYTES 1
 #define WCD9XXX_PAGE_NUM(reg)    (((reg) >> 8) & 0xff)
+
+#ifdef CONFIG_SERIAL_MSM_HSL
+/* This parameter indicating the uart console on/off */
+/* Shouldn't let uart switch gpio be high if this unset */
+extern unsigned uart_info;
+#endif
+static unsigned uart_info_codec;
 
 struct wcd9xxx_i2c {
 	struct i2c_client *client;
@@ -1716,6 +1723,7 @@ static struct dentry *debugfs_peek;
 static struct dentry *debugfs_poke;
 static struct dentry *debugfs_power_state;
 static struct dentry *debugfs_reg_dump;
+static struct dentry *debugfs_uart_status;
 
 static unsigned char read_data;
 
@@ -1782,6 +1790,7 @@ static ssize_t codec_debug_read(struct file *file, char __user *ubuf,
 	char lbuf[8];
 	char *access_str = file->private_data;
 	ssize_t ret_cnt;
+	struct wcd9xxx_pdata *pdata= NULL;
 
 	if (*ppos < 0 || !count)
 		return -EINVAL;
@@ -1792,6 +1801,12 @@ static ssize_t codec_debug_read(struct file *file, char __user *ubuf,
 					       strnlen(lbuf, 7));
 	} else if (!strcmp(access_str, "slimslave_reg_dump")) {
 		ret_cnt = wcd9xxx_slimslave_reg_show(ubuf, count, ppos);
+	} else if (!strcmp(access_str, "slimslave_uart_status")) {
+		pdata = debugCodec->slim->dev.platform_data;
+		snprintf(lbuf, sizeof(lbuf), "%s\n",
+				gpio_get_value(pdata->uart_control)? "hp": "uart");
+		ret_cnt = simple_read_from_buffer(ubuf, count, ppos, lbuf,
+					strnlen(lbuf, sizeof(lbuf)));
 	} else {
 		pr_err("%s: %s not permitted to read\n", __func__, access_str);
 		ret_cnt = -EPERM;
@@ -1873,6 +1888,7 @@ static ssize_t codec_debug_write(struct file *filp,
 	char lbuf[32];
 	int rc;
 	long int param[5];
+	struct wcd9xxx_pdata *pdata = NULL;
 
 	if (cnt > sizeof(lbuf) - 1)
 		return -EINVAL;
@@ -1900,6 +1916,12 @@ static ssize_t codec_debug_write(struct file *filp,
 				param[0]);
 		else
 			rc = -EINVAL;
+	} else if (!strcmp(access_str, "slimslave_uart_status")) {
+		rc = get_parameters(lbuf, param, 1);
+		pdata = debugCodec->slim->dev.platform_data;
+		pr_info("param %ld uart_info_codec %u\n", param[0], uart_info_codec);
+		/* if fastboot uart was off, never switch to uart */
+		gpio_set_value(pdata->uart_control, (uart_info_codec && !param[0]) ? 0 : 1);
 	} else if (!strcmp(access_str, "power_state")) {
 		rc = codec_debug_process_cdc_power(lbuf);
 	}
@@ -2881,8 +2903,26 @@ static struct wcd9xxx_pdata *wcd9xxx_populate_dt_pdata(struct device *dev)
 		else
 			pdata->cdc_variant = WCD9XXX;
 	}
-	pdata->wcd9xxx_mic_tristate = of_property_read_bool(dev->of_node,
-						 "qcom,wcd9xxx-mic-tristate");
+
+	/* set default uart gpio status.
+	 * GPIOF_OUT_INIT_LOW  = uart
+	 * GPIOF_OUT_INIT_HIGH = hp
+	 */
+	pdata->uart_control = of_get_named_gpio_flags(dev->of_node,
+				"asus,uart-sw-control", 0, NULL);
+
+#ifdef CONFIG_SERIAL_MSM_HSL
+	uart_info_codec = uart_info;
+#else
+	uart_info_codec = 0;
+#endif
+
+	if (pdata->uart_control) {
+		ret = gpio_request_one(pdata->uart_control,
+					uart_info_codec ? GPIOF_OUT_INIT_LOW : GPIOF_OUT_INIT_HIGH,
+					"uart-sw-control");
+	}
+	pr_info("init uart control %d %d\n", pdata->uart_control, ret);
 
 	return pdata;
 err:
@@ -3146,6 +3186,11 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 		debugfs_reg_dump = debugfs_create_file("slimslave_reg_dump",
 		S_IFREG | S_IRUSR, debugfs_wcd9xxx_dent,
 		(void *) "slimslave_reg_dump", &codec_debug_ops);
+
+		debugfs_uart_status = debugfs_create_file("slimslave_uart_status",
+		S_IFREG | S_IRUGO, debugfs_wcd9xxx_dent,
+		(void *) "slimslave_uart_status", &codec_debug_ops);
+
 	}
 #endif
 

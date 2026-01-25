@@ -515,6 +515,47 @@ static const struct file_operations dwc3_testmode_fops = {
 	.release		= single_release,
 };
 
+int traffic_init = 0;
+
+static int dwc3_traffic_result_read(struct seq_file *s, void *unused)
+{
+	struct dwc3		*dwc = s->private;
+	int curr_usb_traffic_state;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dwc->lock, flags);
+	curr_usb_traffic_state = traffic_init ? dwc->usb_traffic_state : 1;
+	spin_unlock_irqrestore(&dwc->lock, flags);
+
+	traffic_init = 1;
+
+	seq_printf(s, "%d\n", curr_usb_traffic_state);
+
+	return 0;
+}
+
+static int dwc3_traffic_result_open(struct inode *ip, struct file *fp)
+{
+	struct seq_file		*s;
+	struct dwc3		*dwc;
+
+	single_open(fp, dwc3_traffic_result_read, ip->i_private);
+
+	s = fp->private_data;
+	dwc = s->private;
+
+	pr_info("%s: dwc3 traffic node opened\n",__func__);
+
+	return 0;
+}
+
+static struct file_operations dwc3_traffic_result_fops = {
+	.open = dwc3_traffic_result_open,
+	.release = single_release,
+	.llseek	= seq_lseek,
+	.read			= seq_read,
+};
+
 static int dwc3_link_state_show(struct seq_file *s, void *unused)
 {
 	struct dwc3		*dwc = s->private;
@@ -634,7 +675,7 @@ static ssize_t dwc3_store_ep_num(struct file *file, const char __user *ubuf,
 	unsigned int		num, dir, temp;
 	unsigned long		flags;
 
-	if (copy_from_user(kbuf, ubuf, min_t(size_t, sizeof(kbuf) - 1, count)))
+	if (copy_from_user(kbuf, ubuf, count > 10 ? 10 : count))
 		return -EFAULT;
 
 	if (sscanf(kbuf, "%u %u", &num, &dir) != 2)
@@ -1170,6 +1211,13 @@ int dwc3_debugfs_init(struct dwc3 *dwc)
 
 	dbg_dwc3_data[count] = dwc;
 	count++;
+	
+	file = debugfs_create_file("usb_traffic_state", S_IRUGO | S_IWUSR, root,
+			dwc, &dwc3_traffic_result_fops);
+	if (!file) {
+		goto err1;
+	}	
+	
 	return 0;
 
 err1:

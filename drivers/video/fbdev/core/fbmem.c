@@ -1080,6 +1080,9 @@ fb_blank(struct fb_info *info, int blank)
 			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
 	}
 
+	if(*(int*)event.data == FB_BLANK_POWERDOWN)
+		get_active_wakeup_source(); // show wake lock before entering suspend.
+
  	return ret;
 }
 EXPORT_SYMBOL(fb_blank);

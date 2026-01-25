@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1576,16 +1576,11 @@ int mdss_mdp_scaler_lut_cfg(struct mdp_scale_data_v2 *scaler,
 	};
 
 	mdata = mdss_mdp_get_mdata();
-
-	mutex_lock(&mdata->scaler_off->scaler_lock);
-
 	lut_tbl = &mdata->scaler_off->lut_tbl;
 	if ((!lut_tbl) || (!lut_tbl->valid)) {
-		mutex_unlock(&mdata->scaler_off->scaler_lock);
 		pr_err("%s:Invalid QSEED3 LUT TABLE\n", __func__);
 		return -EINVAL;
 	}
-
 	if ((scaler->lut_flag & SCALER_LUT_DIR_WR) ||
 		(scaler->lut_flag & SCALER_LUT_Y_CIR_WR) ||
 		(scaler->lut_flag & SCALER_LUT_UV_CIR_WR) ||
@@ -1635,8 +1630,6 @@ int mdss_mdp_scaler_lut_cfg(struct mdp_scale_data_v2 *scaler,
 	if (scaler->lut_flag & SCALER_LUT_SWAP)
 		writel_relaxed(BIT(0), MDSS_MDP_REG_SCALER_COEF_LUT_CTRL +
 				offset);
-
-	mutex_unlock(&mdata->scaler_off->scaler_lock);
 
 	return 0;
 }
@@ -2773,9 +2766,8 @@ int mdss_mdp_pp_resume(struct msm_fb_data_type *mfd)
 		if (PP_AD_STATE_RUN & ad->state) {
 			ad->ipc_frame_count = 0;
 			ad->state |= PP_AD_STATE_IPC_RESUME;
-			ad->cfg.mode |= MDSS_AD_MODE_IPC_BIT;
 			pr_debug("switch mode to %d, last_ad_data = %d\n",
-				 ad->cfg.mode, ad->last_ad_data);
+				ad->cfg.mode, ad->last_ad_data);
 		}
 	}
 
@@ -3119,6 +3111,17 @@ static int pp_ad_calc_bl(struct msm_fb_data_type *mfd, int bl_in, int *bl_out,
 	if (bl_in == 0)
 		return 0;
 	mutex_lock(&ad->lock);
+	/*
+	* Skipping backlight attenuation processing for operation with
+	* manual strength mode Assumption here is that there is no backlight
+	* attenuation requirement and parameters are not updated even at init
+	*/
+	if (MDSS_AD_MODE_MAN_STR == ad->cfg.mode) {
+		mfd->ad_bl_level = bl_in;
+		mutex_unlock(&ad->lock);
+		return 0;
+	}
+
 	if (!mfd->ad_bl_level)
 		mfd->ad_bl_level = bl_in;
 	if (!(ad->sts & PP_STS_ENABLE)) {
@@ -5647,11 +5650,24 @@ int mdss_mdp_ad_config(struct msm_fb_data_type *mfd,
 {
 	struct mdss_ad_info *ad;
 	struct msm_fb_data_type *bl_mfd;
-	int lin_ret = -1, inv_ret = -1, att_ret = -1, ret = 0;
+	int ret = 0;
 	u32 last_ops;
-	struct mdss_overlay_private *mdp5_data;
 
 	ret = mdss_mdp_get_ad(mfd, &ad);
+	printk ( KERN_EMERG "[DEBUG] Origin : %d\n",ad->init.i_control[0]);
+	printk ( KERN_EMERG "[DEBUG]  i_control1 : %d\n",ad->init.i_control[1]);
+	printk ( KERN_EMERG "[DEBUG]  black level : %d\n",ad->init.black_lvl);
+	printk ( KERN_EMERG "[DEBUG]  white level : %d\n",ad->init.white_lvl);
+	printk ( KERN_EMERG "[DEBUG]  varience : %d\n",ad->init.var);
+	printk ( KERN_EMERG "[DEBUG]  limit ampl : %d\n",ad->init.limit_ampl);
+	printk ( KERN_EMERG "[DEBUG]  i_dither : %d\n",ad->init.i_dither);
+	printk ( KERN_EMERG "[DEBUG]  slope max : %d\n",ad->init.slope_max);
+	printk ( KERN_EMERG "[DEBUG]  slope min : %d\n",ad->init.slope_min);
+	printk ( KERN_EMERG "[DEBUG]  dither_ctl : %d\n",ad->init.dither_ctl);
+	printk ( KERN_EMERG "[DEBUG]  format : %d\n",ad->init.format);
+	printk ( KERN_EMERG "[DEBUG]  auto size: %d\n",ad->init.auto_size);
+	printk ( KERN_EMERG "[DEBUG]  frame width : %d\n",ad->init.frame_w);
+	printk ( KERN_EMERG "[DEBUG]  frame height: %d\n",ad->init.frame_h);
 	if (ret == -ENODEV || ret == -EPERM) {
 		pr_err("AD not supported on device, disp num %d\n",
 			mfd->index);
@@ -5678,55 +5694,32 @@ int mdss_mdp_ad_config(struct msm_fb_data_type *mfd,
 	if (init_cfg->ops & MDP_PP_AD_INIT) {
 		memcpy(&ad->init, &init_cfg->params.init,
 				sizeof(struct mdss_ad_init));
-		if (init_cfg->params.init.bl_lin_len == AD_BL_LIN_LEN) {
-			lin_ret = copy_from_user(&ad->bl_lin,
-				init_cfg->params.init.bl_lin,
-				init_cfg->params.init.bl_lin_len *
-				sizeof(uint32_t));
-			inv_ret = copy_from_user(&ad->bl_lin_inv,
-				init_cfg->params.init.bl_lin_inv,
-				init_cfg->params.init.bl_lin_len *
-				sizeof(uint32_t));
-			if (lin_ret || inv_ret)
-				ret = -ENOMEM;
-		} else {
-			ret = -EINVAL;
-		}
-		if (ret) {
-			ad->state &= ~PP_AD_STATE_BL_LIN;
-			goto ad_config_exit;
-		} else
-			ad->state |= PP_AD_STATE_BL_LIN;
-
-		if ((init_cfg->params.init.bl_att_len == AD_BL_ATT_LUT_LEN) &&
-			(init_cfg->params.init.bl_att_lut)) {
-			att_ret = copy_from_user(&ad->bl_att_lut,
-				init_cfg->params.init.bl_att_lut,
-				init_cfg->params.init.bl_att_len *
-				sizeof(uint32_t));
-			if (att_ret)
-				ret = -ENOMEM;
-		} else {
-			ret = -EINVAL;
-		}
-		if (ret) {
-			ad->state &= ~PP_AD_STATE_BL_LIN;
-			goto ad_config_exit;
-		} else
-			ad->state |= PP_AD_STATE_BL_LIN;
-
+		ad->state |= PP_AD_STATE_BL_LIN;
+		/*
+		* BL Attenuation parameters and Linear and Inverse BL LUT
+		* parsing has been omitted since only manual mode is supported
+		*/
 		ad->sts |= PP_AD_STS_DIRTY_INIT;
-	} else if (init_cfg->ops & MDP_PP_AD_CFG) {
-		memcpy(&ad->cfg, &init_cfg->params.cfg,
-				sizeof(struct mdss_ad_cfg));
-		if (ad->state & PP_AD_STATE_IPC_RESUME)
-			ad->cfg.mode |= MDSS_AD_MODE_IPC_BIT;
-		ad->cfg.backlight_scale = MDSS_MDP_AD_BL_SCALE;
-		ad->sts |= PP_AD_STS_DIRTY_CFG;
-		mdp5_data = mfd_to_mdp5_data(mfd);
-		if (mdp5_data)
-			mdp5_data->ad_events = 0;
+	} else if (init_cfg->ops & MDP_PP_AD_CFG){
+		pr_err("Assertive display does not support config call\n");
 	}
+	if (init_cfg->ops & MDP_PP_OPS_READ) {
+		memcpy(&init_cfg->params.init, &ad->init,sizeof(struct mdss_ad_init));
+	}
+	printk ( KERN_EMERG "[DEBUG]  After Memcpy : %d\n",ad->init.i_control[0]);
+	printk ( KERN_EMERG "[DEBUG]  i_control1 : %d\n",ad->init.i_control[1]);
+	printk ( KERN_EMERG "[DEBUG]  black level : %d\n",ad->init.black_lvl);
+	printk ( KERN_EMERG "[DEBUG]  white level : %d\n",ad->init.white_lvl);
+	printk ( KERN_EMERG "[DEBUG]  varience : %d\n",ad->init.var);
+	printk ( KERN_EMERG "[DEBUG]  limit ampl : %d\n",ad->init.limit_ampl);
+	printk ( KERN_EMERG "[DEBUG]  i_dither : %d\n",ad->init.i_dither);
+	printk ( KERN_EMERG "[DEBUG]  slope max : %d\n",ad->init.slope_max);
+	printk ( KERN_EMERG "[DEBUG]  slope min : %d\n",ad->init.slope_min);
+	printk ( KERN_EMERG "[DEBUG]  dither_ctl : %d\n",ad->init.dither_ctl);
+	printk ( KERN_EMERG "[DEBUG]  format : %d\n",ad->init.format);
+	printk ( KERN_EMERG "[DEBUG]  auto size: %d\n",ad->init.auto_size);
+	printk ( KERN_EMERG "[DEBUG]  frame width : %d\n",ad->init.frame_w);
+	printk ( KERN_EMERG "[DEBUG]  frame height: %d\n",ad->init.frame_h);
 
 	last_ops = ad->ops & MDSS_PP_SPLIT_MASK;
 	ad->ops = init_cfg->ops & MDSS_PP_SPLIT_MASK;
@@ -5746,9 +5739,12 @@ int mdss_mdp_ad_config(struct msm_fb_data_type *mfd,
 
 	if (!ret && (init_cfg->ops & MDP_PP_OPS_DISABLE)) {
 		ad->sts &= ~PP_STS_ENABLE;
-		mutex_unlock(&ad->lock);
-		cancel_work_sync(&ad->calc_work);
-		mutex_lock(&ad->lock);
+		if (ad->cfg.mode != MDSS_AD_MODE_MAN_STR) {
+			mutex_unlock(&ad->lock);
+			cancel_work_sync(&ad->calc_work);
+			mutex_lock(&ad->lock);
+		}
+
 		ad->mfd = NULL;
 		ad->bl_mfd = NULL;
 	} else if (!ret && (init_cfg->ops & MDP_PP_OPS_ENABLE)) {
@@ -5756,7 +5752,6 @@ int mdss_mdp_ad_config(struct msm_fb_data_type *mfd,
 		ad->mfd = mfd;
 		ad->bl_mfd = bl_mfd;
 	}
-ad_config_exit:
 	mutex_unlock(&ad->lock);
 	return ret;
 }
@@ -5780,7 +5775,15 @@ int mdss_mdp_ad_input(struct msm_fb_data_type *mfd,
 	}
 
 	mutex_lock(&ad->lock);
-	if ((!PP_AD_STATE_IS_INITCFG(ad->state) &&
+	if ((MDSS_AD_MODE_MAN_STR == input->mode) &&
+		((PP_AD_STATE_INIT & ad->state) ||
+		(PP_AD_STS_DIRTY_INIT & ad->sts))) {
+		if (!(ad->state & PP_AD_STATE_CFG)) {
+			ad->cfg.mode = input->mode;
+			ad->cfg.backlight_scale = MDSS_MDP_AD_BL_SCALE;
+			ad->sts |= PP_AD_STS_DIRTY_CFG;
+			}
+	} else if ((!PP_AD_STATE_IS_INITCFG(ad->state) &&
 			!PP_AD_STS_IS_DIRTY(ad->sts)) &&
 			(input->mode != MDSS_AD_MODE_CALIB)) {
 		pr_warn("AD not initialized or configured.\n");
@@ -5820,15 +5823,15 @@ int mdss_mdp_ad_input(struct msm_fb_data_type *mfd,
 			goto error;
 		}
 		if (input->in.strength > MDSS_MDP_MAX_AD_STR) {
-			pr_warn("invalid input strength\n");
-			ret = -EINVAL;
+			ad->ad_data_mode = MDSS_AD_INPUT_STRENGTH;
+			input->in.strength = ad->ad_data;
+			printk(KERN_EMERG"invalid input strength %d\n",ad->ad_data);
+			ret = 1;
 			goto error;
 		}
 		ad->ad_data_mode = MDSS_AD_INPUT_STRENGTH;
-		pr_debug("strength = %d\n", input->in.strength);
+		printk(KERN_EMERG"strength = %d\n", input->in.strength);
 		ad->ad_data = input->in.strength;
-		ad->calc_itr = ad->cfg.stab_itr;
-		ad->sts |= PP_AD_STS_DIRTY_VSYNC;
 		ad->sts |= PP_AD_STS_DIRTY_DATA;
 		break;
 	case MDSS_AD_MODE_CALIB:
@@ -5865,7 +5868,7 @@ static void pp_ad_input_write(struct mdss_mdp_ad *ad_hw,
 						struct mdss_ad_info *ad)
 {
 	char __iomem *base;
-
+	pr_debug("[DISP]%s, mode:%d!!!\n", __func__,ad->cfg.mode);
 	base = ad_hw->base;
 	switch (ad->cfg.mode) {
 	case MDSS_AD_MODE_AUTO_BL:
@@ -5884,7 +5887,7 @@ static void pp_ad_input_write(struct mdss_mdp_ad *ad_hw,
 		writel_relaxed(ad->ad_data, base + MDSS_MDP_REG_AD_TARG_STR);
 		break;
 	case MDSS_AD_MODE_MAN_STR:
-		writel_relaxed(ad->bl_data, base + MDSS_MDP_REG_AD_BL);
+		pr_debug("[DISP] AD strength = %d\n", ad->ad_data);
 		writel_relaxed(ad->ad_data, base + MDSS_MDP_REG_AD_STR_MAN);
 		break;
 	case MDSS_AD_MODE_MAN_IPC:
@@ -5923,6 +5926,7 @@ static void pp_ad_init_write(struct mdss_mdp_ad *ad_hw, struct mdss_ad_info *ad,
 	else
 		is_dual_pipe = false;
 
+	pr_debug("[DISP]%s\n", __func__);
 	base = ad_hw->base;
 	is_calc = ad->calc_hw_num == ad_hw->num;
 	split_mode = !!(ad->ops & MDSS_PP_SPLIT_MASK);
@@ -6015,11 +6019,12 @@ static void pp_ad_init_write(struct mdss_mdp_ad *ad_hw, struct mdss_ad_info *ad,
 }
 
 #define MDSS_PP_AD_DEF_CALIB 0x6E
+#define AD_CFG_BUF_MODE_UPDATE_VBI 0x2
 static void pp_ad_cfg_write(struct mdss_mdp_ad *ad_hw, struct mdss_ad_info *ad)
 {
 	char __iomem *base;
 	u32 temp, temp_calib = MDSS_PP_AD_DEF_CALIB;
-
+	pr_debug("[DISP]%s\n", __func__);
 	base = ad_hw->base;
 	switch (ad->cfg.mode) {
 	case MDSS_AD_MODE_AUTO_BL:
@@ -6078,7 +6083,9 @@ static void pp_ad_cfg_write(struct mdss_mdp_ad *ad_hw, struct mdss_ad_info *ad)
 				base + MDSS_MDP_REG_AD_BL_MAX);
 		writel_relaxed(ad->cfg.mode | MDSS_AD_AUTO_TRIGGER,
 				base + MDSS_MDP_REG_AD_MODE_SEL);
-		pr_debug("stab_itr = %d\n", ad->cfg.stab_itr);
+		/* Check if this is needed as we already cache till commit */
+		writel_relaxed(AD_CFG_BUF_MODE_UPDATE_VBI,
+		base + MDSS_MDP_REG_AD_CFG_BUF);
 		break;
 	default:
 		break;
@@ -6207,7 +6214,6 @@ static int mdss_mdp_ad_setup(struct msm_fb_data_type *mfd)
 		if (ad->ipc_frame_count == MDSS_AD_IPC_FRAME_COUNT) {
 			ad->state &= ~PP_AD_STATE_IPC_RESUME;
 			ad->state |= PP_AD_STATE_IPC_RESET;
-			ad->cfg.mode &= ~MDSS_AD_MODE_IPC_BIT;
 			if (ad->last_ad_data != ad->ad_data)
 				ad->sts |= PP_AD_STS_DIRTY_DATA;
 			if (memcmp(ad->last_calib, ad->cfg.calib,

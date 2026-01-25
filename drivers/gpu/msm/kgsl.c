@@ -1348,45 +1348,6 @@ long kgsl_ioctl_device_getproperty(struct kgsl_device_private *dev_priv,
 		kgsl_context_put(context);
 		break;
 	}
-	case KGSL_PROP_SECURE_BUFFER_ALIGNMENT:
-	{
-		unsigned int align;
-
-		if (param->sizebytes != sizeof(unsigned int)) {
-			result = -EINVAL;
-			break;
-		}
-		/*
-		 * XPUv2 impose the constraint of 1MB memory alignment,
-		 * on the other hand Hypervisor does not have such
-		 * constraints. So driver should fulfill such
-		 * requirements when allocating secure memory.
-		 */
-		align = MMU_FEATURE(&dev_priv->device->mmu,
-				KGSL_MMU_HYP_SECURE_ALLOC) ? PAGE_SIZE : SZ_1M;
-
-		if (copy_to_user(param->value, &align, sizeof(align)))
-			result = -EFAULT;
-
-		break;
-	}
-	case KGSL_PROP_SECURE_CTXT_SUPPORT:
-	{
-		unsigned int secure_ctxt;
-
-		if (param->sizebytes != sizeof(unsigned int)) {
-			result = -EINVAL;
-			break;
-		}
-
-		secure_ctxt = dev_priv->device->mmu.secured ? 1 : 0;
-
-		if (copy_to_user(param->value, &secure_ctxt,
-				sizeof(secure_ctxt)))
-			result = -EFAULT;
-
-		break;
-	}
 	default:
 		if (is_compat_task())
 			result = dev_priv->device->ftbl->getproperty_compat(
@@ -3209,7 +3170,6 @@ long kgsl_ioctl_gpuobj_set_info(struct kgsl_device_private *dev_priv,
 	struct kgsl_process_private *private = dev_priv->process_priv;
 	struct kgsl_gpuobj_set_info *param = data;
 	struct kgsl_mem_entry *entry;
-	int ret = 0;
 
 	if (param->id == 0)
 		return -EINVAL;
@@ -3222,16 +3182,12 @@ long kgsl_ioctl_gpuobj_set_info(struct kgsl_device_private *dev_priv,
 		copy_metadata(entry, param->metadata, param->metadata_len);
 
 	if (param->flags & KGSL_GPUOBJ_SET_INFO_TYPE) {
-		if (param->type <= (KGSL_MEMTYPE_MASK >> KGSL_MEMTYPE_SHIFT)) {
-			entry->memdesc.flags &= ~((uint64_t) KGSL_MEMTYPE_MASK);
-			entry->memdesc.flags |= (uint64_t)((param->type <<
-				KGSL_MEMTYPE_SHIFT) & KGSL_MEMTYPE_MASK);
-		} else
-			ret = -EINVAL;
+		entry->memdesc.flags &= ~((uint64_t) KGSL_MEMTYPE_MASK);
+		entry->memdesc.flags |= param->type << KGSL_MEMTYPE_SHIFT;
 	}
 
 	kgsl_mem_entry_put(entry);
-	return ret;
+	return 0;
 }
 
 long kgsl_ioctl_cff_syncmem(struct kgsl_device_private *dev_priv,
@@ -3655,13 +3611,13 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 	if (!kgsl_memdesc_use_cpu_map(&entry->memdesc)) {
 		val = get_unmapped_area(NULL, addr, len, 0, flags);
 		if (IS_ERR_VALUE(val))
-			KGSL_DRV_ERR_RATELIMIT(device,
+			KGSL_MEM_ERR(device,
 				"get_unmapped_area: pid %d addr %lx pgoff %lx len %ld failed error %d\n",
 				private->pid, addr, pgoff, len, (int) val);
 	} else {
 		 val = _get_svm_area(private, entry, addr, len, flags);
 		 if (IS_ERR_VALUE(val))
-			KGSL_DRV_ERR_RATELIMIT(device,
+			KGSL_MEM_ERR(device,
 				"_get_svm_area: pid %d addr %lx pgoff %lx len %ld failed error %d\n",
 				private->pid, addr, pgoff, len, (int) val);
 	}

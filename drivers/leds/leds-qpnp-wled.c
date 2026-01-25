@@ -463,6 +463,7 @@ static int qpnp_wled_module_en(struct qpnp_wled *wled,
 		return rc;
 	reg &= QPNP_WLED_MODULE_EN_MASK;
 	reg |= (state << QPNP_WLED_MODULE_EN_SHIFT);
+	reg = 0;
 	rc = qpnp_wled_write_reg(wled, &reg,
 			QPNP_WLED_MODULE_EN_REG(base_addr));
 	if (rc)

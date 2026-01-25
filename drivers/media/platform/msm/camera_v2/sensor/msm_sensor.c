@@ -17,6 +17,7 @@
 #include "msm_camera_i2c_mux.h"
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
+#include "debugfs/msm_debugfs.h"
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
@@ -117,7 +118,7 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_power_ctrl_t *power_info;
 	enum msm_camera_device_type_t sensor_device_type;
 	struct msm_camera_i2c_client *sensor_i2c_client;
-
+	const char *sensor_name;
 	if (!s_ctrl) {
 		pr_err("%s:%d failed: s_ctrl %pK\n",
 			__func__, __LINE__, s_ctrl);
@@ -130,13 +131,18 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	power_info = &s_ctrl->sensordata->power_info;
 	sensor_device_type = s_ctrl->sensor_device_type;
 	sensor_i2c_client = s_ctrl->sensor_i2c_client;
+	sensor_name = s_ctrl->sensordata->sensor_name;
 
 	if (!power_info || !sensor_i2c_client) {
 		pr_err("%s:%d failed: power_info %pK sensor_i2c_client %pK\n",
 			__func__, __LINE__, power_info, sensor_i2c_client);
 		return -EINVAL;
 	}
-
+	else {
+		if (!strcmp(sensor_name,"imx318")) {
+			imx318_power_state(0);
+		}
+	}
 	/* Power down secure session if it exist*/
 	if (s_ctrl->is_secure)
 		msm_camera_tz_i2c_power_down(sensor_i2c_client);
@@ -211,6 +217,9 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 			msleep(20);
 			continue;
 		} else {
+			if (!strcmp(sensor_name,"imx318")) {
+				imx318_power_state(1);
+			}
 			break;
 		}
 	}
@@ -288,8 +297,11 @@ static struct msm_sensor_ctrl_t *get_sctrl(struct v4l2_subdev *sd)
 static void msm_sensor_stop_stream(struct msm_sensor_ctrl_t *s_ctrl)
 {
 	int32_t rc = 0;
-
-	mutex_lock(s_ctrl->msm_sensor_mutex);
+	const char *sensor_name = s_ctrl->sensordata->sensor_name;
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_lock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_lock(s_ctrl->msm_sensor_mutex);
 	if (s_ctrl->sensor_state == MSM_SENSOR_POWER_UP) {
 		s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write_table(
 			s_ctrl->sensor_i2c_client, &s_ctrl->stop_setting);
@@ -312,7 +324,10 @@ static void msm_sensor_stop_stream(struct msm_sensor_ctrl_t *s_ctrl)
 			pr_err("s_ctrl->func_tbl NULL\n");
 		}
 	}
-	mutex_unlock(s_ctrl->msm_sensor_mutex);
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_unlock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_unlock(s_ctrl->msm_sensor_mutex);
 	return;
 }
 
@@ -385,7 +400,11 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 	struct sensorb_cfg_data32 *cdata = (struct sensorb_cfg_data32 *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
-	mutex_lock(s_ctrl->msm_sensor_mutex);
+	const char *sensor_name = s_ctrl->sensordata->sensor_name;
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_lock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
 	switch (cdata->cfgtype) {
@@ -902,7 +921,10 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 	}
 
 DONE:
-	mutex_unlock(s_ctrl->msm_sensor_mutex);
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_unlock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_unlock(s_ctrl->msm_sensor_mutex);
 
 	return rc;
 }
@@ -913,7 +935,11 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 	struct sensorb_cfg_data *cdata = (struct sensorb_cfg_data *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
-	mutex_lock(s_ctrl->msm_sensor_mutex);
+	const char *sensor_name = s_ctrl->sensordata->sensor_name;
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_lock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
 	switch (cdata->cfgtype) {
@@ -1384,7 +1410,10 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 	}
 
 DONE:
-	mutex_unlock(s_ctrl->msm_sensor_mutex);
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_unlock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_unlock(s_ctrl->msm_sensor_mutex);
 
 	return rc;
 }
@@ -1406,12 +1435,19 @@ static int msm_sensor_power(struct v4l2_subdev *sd, int on)
 {
 	int rc = 0;
 	struct msm_sensor_ctrl_t *s_ctrl = get_sctrl(sd);
-	mutex_lock(s_ctrl->msm_sensor_mutex);
+	const char *sensor_name = s_ctrl->sensordata->sensor_name;
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_lock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_lock(s_ctrl->msm_sensor_mutex);
 	if (!on && s_ctrl->sensor_state == MSM_SENSOR_POWER_UP) {
 		s_ctrl->func_tbl->sensor_power_down(s_ctrl);
 		s_ctrl->sensor_state = MSM_SENSOR_POWER_DOWN;
 	}
-	mutex_unlock(s_ctrl->msm_sensor_mutex);
+	if (!strcmp(sensor_name, "imx318") || !strcmp(sensor_name, "ov8856"))
+		mutex_unlock(s_ctrl->msm_cci0_mutex);
+	else
+		mutex_unlock(s_ctrl->msm_sensor_mutex);
 	return rc;
 }
 

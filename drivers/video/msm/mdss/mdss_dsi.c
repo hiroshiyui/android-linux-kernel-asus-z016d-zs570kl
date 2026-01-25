@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -37,6 +37,7 @@
 #define XO_CLK_RATE	19200000
 #define CMDLINE_DSI_CTL_NUM_STRING_LEN 2
 
+struct mdss_panel_data *g_mdss_pdata;
 /* Master structure to hold all the information about the DSI/panel */
 static struct mdss_dsi_data *mdss_dsi_res;
 
@@ -272,11 +273,13 @@ static int mdss_dsi_regulator_init(struct platform_device *pdev,
 	return rc;
 }
 
+int dsi_power_state = 0;
 static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 {
 	int ret = 0;
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
-
+	printk(KERN_DEBUG "[DISP]%s\n",__func__);
+	dsi_power_state = 0;
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		ret = -EINVAL;
@@ -310,7 +313,8 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 {
 	int ret = 0;
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
-
+	dsi_power_state = 1;
+	printk(KERN_DEBUG "[DISP]%s\n",__func__);
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -347,13 +351,22 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 
 	return ret;
 }
-
+int alstate = 0;
 static int mdss_dsi_panel_power_lp(struct mdss_panel_data *pdata, int enable)
 {
 	/* Panel power control when entering/exiting lp mode */
+	if (!enable) {
+		printk(KERN_DEBUG"[DISP] Disable Always on\n");
+		set_tcon_cabc(1,0);
+		alstate = 0;
+	} else if(!alstate) {
+		printk(KERN_DEBUG"[DISP] Enter Always on\n");
+		set_tcon_cabc(1,1);
+		alstate = 1;
+	}
 	return 0;
 }
-
+#if 0
 static int mdss_dsi_panel_power_ulp(struct mdss_panel_data *pdata,
 					int enable)
 {
@@ -403,7 +416,7 @@ static int mdss_dsi_panel_power_ulp(struct mdss_panel_data *pdata,
 	}
 	return ret;
 }
-
+#endif
 int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 	int power_state)
 {
@@ -417,7 +430,7 @@ int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 	}
 
 	pinfo = &pdata->panel_info;
-	pr_debug("%pS-->%s: cur_power_state=%d req_power_state=%d\n",
+	printk(KERN_DEBUG"[DEBUG]%pS-->%s: cur_power_state=%d req_power_state=%d\n",
 		__builtin_return_address(0), __func__,
 		pinfo->panel_power_state, power_state);
 
@@ -437,8 +450,35 @@ int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 		return 0;
 
 	switch (power_state) {
+        case MDSS_PANEL_POWER_OFF:
+                ret = mdss_dsi_panel_power_off(pdata);
+                alstate = 0;
+                break;
+        case MDSS_PANEL_POWER_ON:
+                if (mdss_dsi_is_panel_on_lp(pdata))
+                        ret = mdss_dsi_panel_power_lp(pdata, false);
+                else
+                        ret = mdss_dsi_panel_power_on(pdata);
+                break;
+        case MDSS_PANEL_POWER_LP1:
+        case MDSS_PANEL_POWER_LP2:
+                ret = mdss_dsi_panel_power_lp(pdata, true);
+                break;
+        default:
+                pr_err("%s: unknown panel power state requested (%d)\n",
+                        __func__, power_state);
+                ret = -EINVAL;
+        }
+
+        if (!ret)
+                pinfo->panel_power_state = power_state;
+
+        return ret;
+
+#if 0
 	case MDSS_PANEL_POWER_OFF:
 		ret = mdss_dsi_panel_power_off(pdata);
+		alstate = 0;
 		break;
 	case MDSS_PANEL_POWER_ON:
 		if (mdss_dsi_is_panel_on_ulp(pdata)) {
@@ -477,6 +517,7 @@ int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 		pinfo->panel_power_state = power_state;
 end:
 	return ret;
+#endif
 }
 
 static void mdss_dsi_put_dt_vreg_data(struct device *dev,
@@ -2646,6 +2687,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 							pdata);
 		break;
 	case MDSS_EVENT_UNBLANK:
+		printk(KERN_DEBUG"[DEBUG]%s EVENT_UNBLANK \n",__func__);
 		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_unblank(pdata);
 		break;
@@ -2653,19 +2695,21 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		rc = mdss_dsi_post_panel_on(pdata);
 		break;
 	case MDSS_EVENT_PANEL_ON:
+		printk(KERN_DEBUG"[DEBUG]%s EVENT_PANEL_ON \n",__func__);
 		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
 		if (ctrl_pdata->on_cmds.link_state == DSI_HS_MODE)
 			rc = mdss_dsi_unblank(pdata);
 		pdata->panel_info.esd_rdy = true;
 		break;
 	case MDSS_EVENT_BLANK:
+		printk(KERN_DEBUG"[DEBUG]%s EVENT_BLANK\n",__func__);
 		power_state = (int) (unsigned long) arg;
 		if (ctrl_pdata->off_cmds.link_state == DSI_HS_MODE)
 			rc = mdss_dsi_blank(pdata, power_state);
 		break;
 	case MDSS_EVENT_PANEL_OFF:
+		printk(KERN_DEBUG"[DEBUG]%s EVENT_PANEL_OFF \n",__func__);
 		power_state = (int) (unsigned long) arg;
-		disable_esd_thread();
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_MDP_ACTIVE;
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_blank(pdata, power_state);
@@ -4305,6 +4349,7 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 				&ctrl_pdata->phy_regulator_io, NULL);
 	}
 
+	g_mdss_pdata = &(ctrl_pdata->panel_data);
 	panel_debug_register_base("panel",
 		ctrl_pdata->ctrl_base, ctrl_pdata->reg_size);
 

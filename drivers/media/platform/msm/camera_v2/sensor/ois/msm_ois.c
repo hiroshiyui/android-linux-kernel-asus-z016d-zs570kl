@@ -17,8 +17,11 @@
 #include "msm_sd.h"
 #include "msm_ois.h"
 #include "msm_cci.h"
+#include "../debugfs/msm_debugfs.h"
 
 DEFINE_MSM_MUTEX(msm_ois_mutex);
+extern struct mutex *msm_cci0_sensor_mutex;
+
 /*#define MSM_OIS_DEBUG*/
 #undef CDBG
 #ifdef MSM_OIS_DEBUG
@@ -26,12 +29,84 @@ DEFINE_MSM_MUTEX(msm_ois_mutex);
 #else
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 #endif
+#define MAX_POLL_COUNT 100
+
+#define PROGRAM_DOWNLOAD_OIS_OP_CODE 0x80
+#define COEFFICIENT_DOWNLOAD_OIS_OP_CODE 0x88
+#define PROGRAM_DOWNLOAD_TRNS_SIZE 32
+
+static int PROGRAM_DOWNLOAD_OIS_FW[5000];
+static int COEFFICIENT_DOWNLOAD_OIS_FW[1000];
+static int PROGRAM_DOWNLOAD_OIS_FW_LENGTH;
+static int COEFFICIENT_DOWNLOAD_OIS_FW_LENGTH;
 
 static struct v4l2_file_operations msm_ois_v4l2_subdev_fops;
 static int32_t msm_ois_power_up(struct msm_ois_ctrl_t *o_ctrl);
 static int32_t msm_ois_power_down(struct msm_ois_ctrl_t *o_ctrl);
+static int Sysfs_read_byte_seq(char *filename, int *value, int size);
 
 static struct i2c_driver msm_ois_i2c_driver;
+
+static struct reg_settings_ois_t ois_disable_setting_array[] = {
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0C0C, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+};
+
+static struct reg_settings_ois_t ois_movie_setting_array[] = {
+#if 1
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0C0C, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8436, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF87F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8440, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF07F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8443, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB41E, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x841B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B6, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF87F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C0, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF07F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C3, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB41E, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x849B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8438, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x051A, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B8, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x051A, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8447, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x4317, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C7, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x4317, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+#endif
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0D0D, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+};
+
+static struct reg_settings_ois_t ois_still_setting_array[] = {
+#if 1
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0C0C, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8436, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF87F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8440, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF07F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8443, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB41E, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x841B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B6, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF87F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C0, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF07F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C3, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB41E, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x849B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xB000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8438, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x051A, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B8, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x051A, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8447, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x4317, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C7, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x4317, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+#endif
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0D0D, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+};
+
+static struct reg_settings_ois_t ois_test_setting_array[] = {
+#if 0
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0C0C, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8436, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8440, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8443, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x841B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x8000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B6, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C0, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C3, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xFF7F, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x849B, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x8000, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8438, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x5209, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84B8, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x5209, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x8447, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF240, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+	{.reg_addr = 0x84C7, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0xF240, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+#endif
+	{.reg_addr = 0x847F, .addr_type = MSM_CAMERA_I2C_WORD_ADDR, 0x0D0D, .data_type = MSM_CAMERA_I2C_WORD_DATA, .i2c_operation = MSM_OIS_WRITE, .delay = 0},
+};
 
 static int32_t msm_ois_download(struct msm_ois_ctrl_t *o_ctrl)
 {
@@ -157,6 +232,13 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 	int32_t rc = -EFAULT;
 	int32_t i = 0;
 	struct msm_camera_i2c_seq_reg_array *reg_setting;
+	struct msm_camera_i2c_seq_reg_array *reg_setting_seg;
+	int16_t j = 0;
+	uint16_t read_num = 0;
+	uint16_t block_cnt = 0;
+	uint16_t total_cnt = 0;
+	uint16_t register_array_size = 0;
+	uint16_t fw_array_size = 0;
 	CDBG("Enter\n");
 
 	for (i = 0; i < size; i++) {
@@ -165,11 +247,16 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 			switch (settings[i].data_type) {
 			case MSM_CAMERA_I2C_BYTE_DATA:
 			case MSM_CAMERA_I2C_WORD_DATA:
+				pr_debug("addr=0x%x, reg_data=0x%x, data_type=%d, addr_type=%d, sid=0x%x\n",
+							settings[i].reg_addr, settings[i].reg_data,
+							settings[i].data_type, o_ctrl->i2c_client.addr_type,
+							o_ctrl->i2c_client.cci_client->sid);
+
 				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-					&o_ctrl->i2c_client,
-					settings[i].reg_addr,
-					settings[i].reg_data,
-					settings[i].data_type);
+							&o_ctrl->i2c_client,
+							settings[i].reg_addr,
+							settings[i].reg_data,
+							settings[i].data_type);
 				break;
 			case MSM_CAMERA_I2C_DWORD_DATA:
 			reg_setting =
@@ -201,7 +288,96 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 				if (rc < 0)
 					return rc;
 				break;
+			case MSM_CAMERA_I2C_NO_DATA:
+				pr_debug("%s: MSM_CAMERA_I2C_NO_DATA +++\n", __func__);
+				o_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+				settings[i].reg_addr = (settings[i].reg_addr & 0xFF00) >> 8;
+				settings[i].data_type = MSM_CAMERA_I2C_BYTE_DATA;
+				pr_debug("addr=0x%x, reg_data=0x%x, data_type=%d, addr_type=%d, sid=0x%x\n",
+						settings[i].reg_addr, settings[i].reg_data,
+						settings[i].data_type, o_ctrl->i2c_client.addr_type,
+						o_ctrl->i2c_client.cci_client->sid);
+				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+							&o_ctrl->i2c_client,
+							settings[i].reg_addr,
+							settings[i].reg_data,
+							settings[i].data_type);
+				o_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+				break;
+			case MSM_CAMERA_I2C_WRITE_FW_DATA:
+				pr_debug("%s: MSM_CAMERA_I2C_WRITE_FW_DATA +++\n", __func__);
+				reg_setting_seg = kzalloc(sizeof(struct msm_camera_i2c_seq_reg_array), GFP_KERNEL);
+				if (!reg_setting_seg)
+					return -ENOMEM;
+				if(settings[i].reg_data == 0x0001) {
+				   fw_array_size = PROGRAM_DOWNLOAD_OIS_FW_LENGTH;
+				} else if(settings[i].reg_data == 0x0002) {
+				   fw_array_size = COEFFICIENT_DOWNLOAD_OIS_FW_LENGTH;
+				}
+				block_cnt = fw_array_size / PROGRAM_DOWNLOAD_TRNS_SIZE + 1;
+				total_cnt = block_cnt;
+				pr_err("%s: fw_array_size = %d, block_cnt = %d, total_cnt = %d\n", __func__, fw_array_size, block_cnt, total_cnt);
+				//usleep(50);
+				while(block_cnt > 0) {
+					if(block_cnt == 1) {
+						register_array_size = fw_array_size % PROGRAM_DOWNLOAD_TRNS_SIZE;
+					} else
+						register_array_size = PROGRAM_DOWNLOAD_TRNS_SIZE;
 
+					if(register_array_size != 0) {
+						if(settings[i].reg_data == 0x0001) {
+							reg_setting_seg->reg_addr = PROGRAM_DOWNLOAD_OIS_OP_CODE << 8 |
+								PROGRAM_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE];
+							for(j = 1; j < register_array_size; j++) {
+								reg_setting_seg->reg_data[j - 1] = (uint8_t)(0xFF & PROGRAM_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE + j]);
+							}
+						} else if(settings[i].reg_data == 0x0002) {
+							reg_setting_seg->reg_addr = COEFFICIENT_DOWNLOAD_OIS_OP_CODE << 8 |
+								COEFFICIENT_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE];
+							for(j = 1; j < register_array_size; j++) {
+								reg_setting_seg->reg_data[j - 1] = (uint8_t)(0xFF & COEFFICIENT_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE + j]);
+							}
+						}
+						reg_setting_seg->reg_data_size = register_array_size - 1;
+						if(register_array_size == 1) {
+							o_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
+							if(settings[i].reg_data == 0x0001) {
+								reg_setting_seg->reg_addr = PROGRAM_DOWNLOAD_OIS_OP_CODE;
+								reg_setting_seg->reg_data[0] = PROGRAM_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE];
+							} else if(settings[i].reg_data == 0x0002) {
+								reg_setting_seg->reg_addr = COEFFICIENT_DOWNLOAD_OIS_OP_CODE;
+								reg_setting_seg->reg_data[0] = COEFFICIENT_DOWNLOAD_OIS_FW[(total_cnt - block_cnt) * PROGRAM_DOWNLOAD_TRNS_SIZE];
+							}
+							reg_setting_seg->reg_data_size = 1;
+						}
+						if(settings[i].reg_data == 0x0001 || settings[i].reg_data == 0x0002) {
+							rc = o_ctrl->i2c_client.i2c_func_tbl->
+								i2c_write_seq(&o_ctrl->i2c_client,
+								reg_setting_seg->reg_addr,
+								reg_setting_seg->reg_data,
+								reg_setting_seg->reg_data_size);
+							if (rc < 0) {
+								if(register_array_size == 1) {
+									o_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+								}
+								pr_err("%s: MSM_CAMERA_I2C_WRITE_FW_DATA block_cnt = %d rc = %d fail ---\n", __func__, block_cnt, rc);
+								kfree(reg_setting_seg);
+								reg_setting_seg = NULL;
+								return rc;
+							}
+						} else {
+							rc = 0;
+						}
+						if(register_array_size == 1) {
+						    o_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+						}
+					}
+					block_cnt--;
+				}
+				kfree(reg_setting_seg);
+				reg_setting_seg = NULL;
+				pr_debug("%s: MSM_CAMERA_I2C_WRITE_FW_DATA ---\n", __func__);
+				break;
 			default:
 				pr_err("Unsupport data type: %d\n",
 					settings[i].data_type);
@@ -214,6 +390,75 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 					(settings[i].delay * 1000) + 1000);
 		}
 			break;
+		case MSM_OIS_READ: {
+				switch (settings[i].data_type) {
+				case MSM_CAMERA_I2C_READ_FW_DATA:
+					pr_debug("%s: MSM_CAMERA_I2C_READ_FW_DATA +++\n", __func__);
+					if(settings[i].reg_data == 0x0001) {
+						PROGRAM_DOWNLOAD_OIS_FW_LENGTH = Sysfs_read_byte_seq("/system/etc/firmware/OIS_ProgramFW.bin", PROGRAM_DOWNLOAD_OIS_FW, ARRAY_SIZE(PROGRAM_DOWNLOAD_OIS_FW));
+						pr_err("%s: PROGRAM_DOWNLOAD_OIS_FW_LENGTH = %d\n", __func__, PROGRAM_DOWNLOAD_OIS_FW_LENGTH);
+					} else if(settings[i].reg_data == 0x0002) {
+						COEFFICIENT_DOWNLOAD_OIS_FW_LENGTH = Sysfs_read_byte_seq("/system/etc/firmware/OIS_CoefficientFW.mem", COEFFICIENT_DOWNLOAD_OIS_FW, ARRAY_SIZE(COEFFICIENT_DOWNLOAD_OIS_FW));
+						pr_err("%s: COEFFICIENT_DOWNLOAD_OIS_FW_LENGTH = %d\n", __func__, COEFFICIENT_DOWNLOAD_OIS_FW_LENGTH);
+					}
+					pr_debug("%s: MSM_CAMERA_I2C_READ_FW_DATA ---\n", __func__);
+					rc = 0;
+					break;
+				case MSM_CAMERA_I2C_BYTE_DATA:
+				case MSM_CAMERA_I2C_WORD_DATA:
+					rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read(
+						&o_ctrl->i2c_client,
+						settings[i].reg_addr,
+						&read_num,
+						settings[i].data_type);
+					pr_err("%s: ois read[0x%x] = 0x%x\n", __func__, settings[i].reg_addr, read_num);
+					if(settings[i].reg_data != 0xFFFF &&
+						settings[i].reg_data != read_num) {
+						pr_err("%s: ois read_num no match expected value = 0x%x\n", __func__, settings[i].reg_data);
+					}
+					break;
+				case MSM_CAMERA_I2C_DWORD_DATA:
+					reg_setting_seg =
+					kzalloc(sizeof(struct msm_camera_i2c_seq_reg_array),
+					GFP_KERNEL);
+					if (!reg_setting_seg)
+						return -ENOMEM;
+					reg_setting_seg->reg_addr = settings[i].reg_addr;
+					reg_setting_seg->reg_data[0] = (uint8_t)
+						((settings[i].reg_data &
+						0xFF000000) >> 24);
+					reg_setting_seg->reg_data[1] = (uint8_t)
+						((settings[i].reg_data &
+						0x00FF0000) >> 16);
+					reg_setting_seg->reg_data[2] = (uint8_t)
+						((settings[i].reg_data &
+						0x0000FF00) >> 8);
+					reg_setting_seg->reg_data[3] = (uint8_t)
+						(settings[i].reg_data & 0x000000FF);
+					reg_setting_seg->reg_data_size = 4;
+					rc = o_ctrl->i2c_client.i2c_func_tbl->
+						i2c_read_seq(&o_ctrl->i2c_client,
+						reg_setting_seg->reg_addr,
+						reg_setting_seg->reg_data,
+						reg_setting_seg->reg_data_size);
+					kfree(reg_setting_seg);
+					reg_setting_seg = NULL;
+					if (rc < 0)
+						return rc;
+					break;
+
+				default:
+					pr_err("Unsupport data type: %d\n",
+						settings[i].data_type);
+					break;
+				}
+				if (settings[i].delay > 20)
+					msleep(settings[i].delay);
+				else if (0 != settings[i].delay)
+					usleep_range(settings[i].delay * 1000,
+						(settings[i].delay * 1000) + 1000);
+			}
+				break;
 
 		case MSM_OIS_POLL: {
 			switch (settings[i].data_type) {
@@ -332,7 +577,7 @@ static int msm_ois_init(struct msm_ois_ctrl_t *o_ctrl)
 		pr_err("failed\n");
 		return -EINVAL;
 	}
-
+	msm_set_ois_ctrl(o_ctrl);
 	if (o_ctrl->ois_device_type == MSM_CAMERA_PLATFORM_DEVICE) {
 		rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_util(
 			&o_ctrl->i2c_client, MSM_CCI_INIT);
@@ -341,6 +586,33 @@ static int msm_ois_init(struct msm_ois_ctrl_t *o_ctrl)
 	}
 	o_ctrl->ois_state = OIS_OPS_ACTIVE;
 	CDBG("Exit\n");
+	return rc;
+}
+static int32_t msm_ois_check_status(struct msm_ois_ctrl_t *o_ctrl, bool isBeforeWriteSettings)
+{
+	int32_t rc = 0;
+	struct reg_settings_ois_t settings;
+	uint16_t reg_data;
+	if (!o_ctrl) {
+		pr_err("failed\n");
+		return -EINVAL;
+	}
+	settings.reg_addr = 0x8200;
+	settings.reg_data = 0x0;
+	settings.data_type = MSM_CAMERA_I2C_WORD_DATA;
+	rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read(
+							&o_ctrl->i2c_client,
+							settings.reg_addr,
+							&reg_data,
+							settings.data_type);
+	settings.reg_data = reg_data;
+	if (isBeforeWriteSettings) {
+		pr_debug("Before write settings");
+		pr_debug("reg_addr: 0x8200, reg_data: 0x%x", settings.reg_data);
+	} else {
+		pr_debug("After write settings");
+		pr_debug("reg_addr: 0x8200, reg_data: 0x%x", settings.reg_data);
+	}
 	return rc;
 }
 
@@ -386,10 +658,11 @@ static int32_t msm_ois_control(struct msm_ois_ctrl_t *o_ctrl,
 			pr_err("Error copying\n");
 			return -EFAULT;
 		}
-
+		msm_ois_check_status(o_ctrl, true);
 		rc = msm_ois_write_settings(o_ctrl,
 			set_info->ois_params.setting_size,
 			settings);
+		msm_ois_check_status(o_ctrl, false);
 		kfree(settings);
 		if (rc < 0) {
 			pr_err("Error\n");
@@ -482,6 +755,38 @@ static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 		kfree(reg_setting);
 		break;
 	}
+	case CFG_OIS_I2C_WRITE_MODE: {
+		struct msm_camera_i2c_seq_reg_setting conf_array;
+#ifdef CONFIG_COMPAT
+		if (is_compat_task()) {
+			memcpy(&conf_array,
+				(void *)cdata->cfg.settings,
+				sizeof(struct msm_camera_i2c_seq_reg_setting));
+		} else
+#endif
+		if (copy_from_user(&conf_array,
+			(void *)cdata->cfg.settings,
+			sizeof(struct msm_camera_i2c_seq_reg_setting))) {
+			pr_err("%s:%d failed\n", __func__, __LINE__);
+			rc = -EFAULT;
+			break;
+		}
+
+		if(conf_array.delay == 0) {
+			rc = msm_ois_write_settings(o_ctrl, ARRAY_SIZE(ois_disable_setting_array),
+				ois_disable_setting_array);
+		} else if(conf_array.delay == 1) {
+			rc = msm_ois_write_settings(o_ctrl, ARRAY_SIZE(ois_movie_setting_array),
+				ois_movie_setting_array);
+		} else if(conf_array.delay == 2) {
+			rc = msm_ois_write_settings(o_ctrl, ARRAY_SIZE(ois_still_setting_array),
+				ois_still_setting_array);
+		} else if(conf_array.delay == 3) {
+			rc = msm_ois_write_settings(o_ctrl, ARRAY_SIZE(ois_test_setting_array),
+				ois_test_setting_array);
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -541,6 +846,66 @@ static int32_t msm_ois_get_subdev_id(struct msm_ois_ctrl_t *o_ctrl,
 	CDBG("subdev_id %d\n", *subdev_id);
 	CDBG("Exit\n");
 	return 0;
+}
+/** @brief read many byte from file
+*
+*	@param filename the file to write
+*	@param value the byte which will store the calibration data from read file
+*	@param size the size of write data
+*
+*/
+static int Sysfs_read_byte_seq(char *filename, int *value, int size)
+{
+	int i = 0;
+	struct file *fp = NULL;
+	mm_segment_t old_fs;
+	loff_t pos_lsts = 0;
+	char buf[4];
+	ssize_t read_size = 0;
+
+	/* open file */
+	fp = filp_open(filename, O_RDONLY, S_IRWXU | S_IRWXG | S_IRWXO);
+	if (IS_ERR_OR_NULL(fp)) {
+		pr_err("%s: open %s fail\n", __func__, filename);
+		return -ENOENT;	/*No such file or directory*/
+	}
+
+	/*For purpose that can use read/write system call*/
+
+	/* Save addr_limit of the current process */
+	old_fs = get_fs();
+	/* Set addr_limit of the current process to that of kernel */
+	set_fs(KERNEL_DS);
+
+	if (fp->f_op != NULL && fp->f_op->read != NULL) {
+		pos_lsts = 0;
+		for(i = 0; i < size; i++){
+			read_size = fp->f_op->read(fp, buf, 4, &pos_lsts);
+			buf[2]='\0';
+			if(read_size == 0) {
+				break;
+			}
+			sscanf(buf, "%x", &value[i]);
+			//if (i < 20)
+			//	pr_err("%s: %s, value[i]=0x%x\n", __func__, buf, value[i]);
+		}
+	} else {
+		/* Set addr_limit of the current process back to its own */
+		set_fs(old_fs);
+
+		/* close file */
+		filp_close(fp, NULL);
+		pr_err("%s: f_op = null or write = null, fail line = %d\n", __func__, __LINE__);
+
+		return -ENXIO;	/*No such device or address*/
+	}
+	/* Set addr_limit of the current process back to its own */
+	set_fs(old_fs);
+
+	/* close file */
+	filp_close(fp, NULL);
+
+	return i;
 }
 
 static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl = {
@@ -728,7 +1093,6 @@ static int32_t msm_ois_i2c_probe(struct i2c_client *client,
 	ois_ctrl_t->i2c_client.i2c_func_tbl = &msm_sensor_qup_func_tbl;
 	ois_ctrl_t->ois_v4l2_subdev_ops = &msm_ois_subdev_ops;
 	ois_ctrl_t->ois_mutex = &msm_ois_mutex;
-
 	/* Assign name for sub device */
 	snprintf(ois_ctrl_t->msm_sd.sd.name, sizeof(ois_ctrl_t->msm_sd.sd.name),
 		"%s", ois_ctrl_t->i2c_driver->driver.name);
@@ -813,6 +1177,25 @@ static long msm_ois_subdev_do_ioctl(
 			settings.reg_setting =
 				compat_ptr(settings32.reg_setting);
 
+			ois_data.cfg.settings = &settings;
+			parg = &ois_data;
+			break;
+		case CFG_OIS_I2C_WRITE_MODE:
+			if (copy_from_user(&settings32,
+				(void *)compat_ptr(u32->cfg.settings),
+				sizeof(
+				struct msm_camera_i2c_seq_reg_setting32))) {
+				pr_err("copy_from_user failed\n");
+				return -EFAULT;
+			}
+
+			settings.addr_type = settings32.addr_type;
+			settings.delay = settings32.delay;
+			settings.size = settings32.size;
+			settings.reg_setting =
+				compat_ptr(settings32.reg_setting);
+
+			ois_data.cfgtype = u32->cfgtype;
 			ois_data.cfg.settings = &settings;
 			parg = &ois_data;
 			break;
@@ -908,7 +1291,11 @@ static int32_t msm_ois_platform_probe(struct platform_device *pdev)
 	}
 
 	msm_ois_t->ois_v4l2_subdev_ops = &msm_ois_subdev_ops;
+#if 1
+	msm_ois_t->ois_mutex = msm_cci0_sensor_mutex;
+#else
 	msm_ois_t->ois_mutex = &msm_ois_mutex;
+#endif
 
 	/* Set platform device handle */
 	msm_ois_t->pdev = pdev;

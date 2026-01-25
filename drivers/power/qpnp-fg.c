@@ -10,7 +10,7 @@
  * GNU General Public License for more details.
  */
 
-#define pr_fmt(fmt)	"FG: %s: " fmt, __func__
+#define pr_fmt(fmt)	"[FG] %s: " fmt, __func__
 
 #include <linux/atomic.h>
 #include <linux/delay.h>
@@ -35,6 +35,8 @@
 #include <linux/string_helpers.h>
 #include <linux/alarmtimer.h>
 #include <linux/qpnp/qpnp-revid.h>
+#include <linux/proc_fs.h>
+#include <linux/switch.h>
 
 /* Register offsets */
 
@@ -78,6 +80,11 @@
 #define BCL_MA_TO_ADC(_current, _adc_val) {		\
 	_adc_val = (u8)((_current) * 100 / 976);	\
 }
+/*Global Function*/
+extern int get_prop_batt_full_charge(void);
+static char *battery_status_str[] = {
+	"Unknown", "Charging", "Discharging", "Not charging", "Full","", "", "","","Quick charging","Not Quick charging",
+};
 
 /* Debug Flag Definitions */
 enum {
@@ -238,16 +245,16 @@ enum fg_mem_data_index {
 static struct fg_mem_setting settings[FG_MEM_SETTING_MAX] = {
 	/*       ID                    Address, Offset, Value*/
 	SETTING(SOFT_COLD,       0x454,   0,      100),
-	SETTING(SOFT_HOT,        0x454,   1,      400),
-	SETTING(HARD_COLD,       0x454,   2,      50),
-	SETTING(HARD_HOT,        0x454,   3,      450),
+	SETTING(SOFT_HOT,        0x454,   1,      500),
+	SETTING(HARD_COLD,       0x454,   2,      15),
+	SETTING(HARD_HOT,        0x454,   3,      600),
 	SETTING(RESUME_SOC,      0x45C,   1,      0),
 	SETTING(BCL_LM_THRESHOLD, 0x47C,   2,      50),
 	SETTING(BCL_MH_THRESHOLD, 0x47C,   3,      752),
-	SETTING(TERM_CURRENT,	 0x40C,   2,      250),
-	SETTING(CHG_TERM_CURRENT, 0x4F8,   2,      250),
+	SETTING(TERM_CURRENT,	 0x40C,   2,      150),
+	SETTING(CHG_TERM_CURRENT, 0x4F8,   2,      150),
 	SETTING(IRQ_VOLT_EMPTY,	 0x458,   3,      3100),
-	SETTING(CUTOFF_VOLTAGE,	 0x40C,   0,      3200),
+	SETTING(CUTOFF_VOLTAGE,	 0x40C,   0,      3400),
 	SETTING(VBAT_EST_DIFF,	 0x000,   0,      30),
 	SETTING(DELTA_SOC,	 0x450,   3,      1),
 	SETTING(BATT_LOW,	 0x458,   0,      4200),
@@ -310,7 +317,7 @@ static struct fg_mem_data fg_backup_regs[FG_BACKUP_MAX] = {
 	BACKUP(MAH_TO_SOC,	0x4A0,   0,      4,     -EINVAL),
 };
 
-static int fg_debug_mask;
+static int fg_debug_mask = FG_STATUS | FG_AGING | FG_IRQS;
 module_param_named(
 	debug_mask, fg_debug_mask, int, S_IRUSR | S_IWUSR
 );
@@ -542,6 +549,8 @@ struct fg_chip {
 	bool			fg_shutdown;
 	bool			use_soft_jeita_irq;
 	bool			allow_false_negative_isense;
+	bool			update_sram_data_flag;
+	bool			asus_force_update_flag;
 	struct delayed_work	update_jeita_setting;
 	struct delayed_work	update_sram_data;
 	struct delayed_work	update_temp_work;
@@ -555,6 +564,7 @@ struct fg_chip {
 	const char		*batt_psy_name;
 	unsigned long		last_sram_update_time;
 	unsigned long		last_temp_update_time;
+	unsigned long		last_asus_force_update_time;
 	int64_t			ocv_coeffs[12];
 	int64_t			cutoff_voltage;
 	int			evaluation_current;
@@ -638,7 +648,10 @@ struct fg_chip {
 	bool			batt_info_restore;
 	bool			*batt_range_ocv;
 	int			*batt_range_pct;
+	struct switch_dev batt_sdev;
 };
+
+static struct fg_chip *fg_dev;
 
 /* FG_MEMIF DEBUGFS structures */
 #define ADDR_LEN	4	/* 3 byte address + 1 space character */
@@ -705,8 +718,71 @@ static const struct of_device_id fg_match_table[] = {
 static char *fg_supplicants[] = {
 	"battery",
 	"bcl",
-	"fg_adc"
+	"fg_adc",
+	"lpm"
 };
+
+/* AC charging Alarm, shilun_huang@asus.com */
+/* remapping capacity by asus, shilun_huang@asus.com*/
+static bool is_input_present(struct fg_chip *chip);
+int64_t adc_temp = 0;
+int pre_capacity;
+bool pre_usb_present;
+int num_capacity_charge[101]=	{2,2,3,2,3,3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,
+				3,2,3,2,3,3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,
+				3,2,3,2,3,3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,
+				3,2,3,2,3,3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,
+				3,2,3,2,3,3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,2};
+int num_capacity_discharge[101]={2,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,
+				3,2,3,2,3,2,3,2,3,2,3,2,2,3,3,2,3,2,3,2,
+				3,2,3,2,3,2,3,2,3,2,3,3,2,3,2,3,2,3,2,3,
+				2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,
+				2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,2,7};
+int mapping_charge[256];
+int mapping_discharge[256];
+void mapping_init(void){
+	int i, j;
+	int charge_temp=0, discharge_temp=0;
+
+	/* check # of capacity table */
+	for (i=0; i<101; i++){
+		charge_temp+=num_capacity_charge[i];
+		discharge_temp+=num_capacity_discharge[i];
+	}
+	if (charge_temp != 256 || discharge_temp != 256){
+		printk(KERN_ERR "mapping error, # of charge_temp = %d, # of discharge_temp = %d \n",
+				charge_temp, discharge_temp);
+	}
+
+	/* generate mapping table*/
+	charge_temp=0;
+	discharge_temp=0;
+	for (i=0; i<101; i++){
+		for (j=0;j<num_capacity_charge[i];j++){
+			mapping_charge[charge_temp]=i;
+			charge_temp++;
+		}
+		for (j=0;j<num_capacity_discharge[i];j++){
+			mapping_discharge[discharge_temp]=i;
+			discharge_temp++;
+		}
+	}
+
+	/* print mapping table */
+	if(fg_debug_mask == FG_MEM_DEBUG_READS){
+			printk(KERN_ERR "########## ASUS charge mapping table ###########\n");
+			for (i=255; i>=0; i--){
+					printk(KERN_ERR "ADC[%d] %d %%\n", i, mapping_charge[i]);
+			}
+			printk(KERN_ERR "#########################################\n");
+			printk(KERN_ERR "########## ASUS discharge mapping table ###########\n");
+			for (i=255; i>=0; i--){
+					printk(KERN_ERR "ADC[%d] %d %%\n", i, mapping_discharge[i]);
+			}
+			printk(KERN_ERR "#########################################\n");
+	}
+	return;
+}
 
 #define DEBUG_PRINT_BUFFER_SIZE 64
 static void fill_string(char *str, size_t str_len, u8 *buf, int buf_len)
@@ -2237,6 +2313,11 @@ static int get_monotonic_soc_raw(struct fg_chip *chip)
 	return cap[0];
 }
 
+int fg_get_monotonic_soc(void)
+{
+	return get_monotonic_soc_raw(fg_dev);
+}
+
 #define EMPTY_CAPACITY		0
 #define DEFAULT_CAPACITY	50
 #define MISSING_CAPACITY	100
@@ -2272,6 +2353,7 @@ static int get_prop_capacity(struct fg_chip *chip)
 	}
 
 	msoc = get_monotonic_soc_raw(chip);
+	adc_temp = msoc;
 	if (msoc == 0) {
 		if (fg_reset_on_lockup && chip->use_vbat_low_empty_soc) {
 			rc = fg_get_vbatt_status(chip, &vbatt_low_sts);
@@ -2296,6 +2378,82 @@ static int get_prop_capacity(struct fg_chip *chip)
 
 	return DIV_ROUND_CLOSEST((msoc - 1) * (FULL_CAPACITY - 2),
 			FULL_SOC_RAW - 2) + 1;
+}
+
+static bool during_transfer = false;
+static int prevent_mapping_down;
+static int get_prop_capacity_asus(struct fg_chip *chip){
+	int msoc;
+	bool input_present = is_input_present(chip);
+
+	if (chip->battery_missing)
+		return MISSING_CAPACITY;
+	if (!chip->profile_loaded && !chip->use_otp_profile)
+		return DEFAULT_CAPACITY;
+	if (chip->charge_full)
+		return FULL_CAPACITY;
+	if (chip->soc_empty) {
+		if (fg_debug_mask & FG_POWER_SUPPLY)
+			pr_info_ratelimited("capacity: %d, EMPTY\n",
+					EMPTY_CAPACITY);
+		return EMPTY_CAPACITY;
+	}
+	msoc = get_monotonic_soc_raw(chip);
+	adc_temp = msoc;
+
+	if (msoc == 0)
+		return EMPTY_CAPACITY;
+	else if (msoc == FULL_SOC_RAW)
+		return FULL_CAPACITY;
+	if (chip->update_sram_data_flag == 1)
+		pr_err("input_present = %d, pre_usb_present = %d\n", input_present, pre_usb_present);
+	if (input_present){
+		if (pre_usb_present == input_present){
+			if (during_transfer && (pre_capacity > mapping_charge[adc_temp])){
+				if (prevent_mapping_down == -1){
+					prevent_mapping_down = mapping_charge[adc_temp];
+					pr_err("[MAP]CP->CP wait %d <= %d, return last CP:%d\n", pre_capacity, mapping_charge[adc_temp], pre_capacity);
+					return pre_capacity;
+				}
+				else if (prevent_mapping_down <= mapping_charge[adc_temp]){
+					pr_err("[MAP]CP->CP wait %d <= %d, return last CP:%d\n", pre_capacity, mapping_charge[adc_temp], pre_capacity);
+					return pre_capacity;
+				}
+				else if (prevent_mapping_down > mapping_charge[adc_temp]){
+					pr_err("[MAP]CP->CP status charging, but capacity down, now return to CP:%d\n", mapping_charge[adc_temp]);
+				}
+			}
+			during_transfer = false;
+			pre_capacity = mapping_charge[adc_temp];
+			return pre_capacity;
+		}
+		else{
+			if( mapping_charge[adc_temp] >= pre_capacity ){
+				pre_usb_present = input_present;
+				return mapping_charge[adc_temp];
+			}
+			else
+				return mapping_discharge[adc_temp];
+		}
+	}
+	else{
+		if (pre_usb_present == input_present){
+			pre_capacity = mapping_discharge[adc_temp];
+			return pre_capacity;
+		}
+		else{
+			if( mapping_discharge[adc_temp] <= pre_capacity ){
+				pre_usb_present = input_present;
+				return mapping_discharge[adc_temp];
+			}
+			else{
+				during_transfer = true;
+				prevent_mapping_down = -1;
+				pr_err("[MAP]DP->CP, return last CP:%d\n",pre_capacity);
+				return pre_capacity;
+			}
+		}
+	}
 }
 
 #define HIGH_BIAS	3
@@ -2545,12 +2703,15 @@ static int64_t twos_compliment_extend(int64_t val, int nbytes)
 #define DECIKELVIN	2730
 #define SRAM_PERIOD_NO_ID_UPDATE_MS	100
 #define FULL_PERCENT_28BIT		0xFFFFFFF
+static int asus_next_time_flag = 0;
 static int update_sram_data(struct fg_chip *chip, int *resched_ms)
 {
 	int i, j, rc = 0;
 	u8 reg[4];
 	int64_t temp;
+	int asus_soc, prcapacity, prsoc, prvoltage, prcurrent, prtemp1, prtemp2;
 	int battid_valid = fg_is_batt_id_valid(chip);
+	int charge_soc, discharge_soc;
 
 	fg_stay_awake(&chip->update_sram_wakeup_source);
 	if (chip->fg_restarting)
@@ -2619,8 +2780,64 @@ static int update_sram_data(struct fg_chip *chip, int *resched_ms)
 		if (fg_debug_mask & FG_MEM_DEBUG_READS)
 			pr_info("%d %lld %d\n", i, temp, fg_data[i].value);
 	}
-	fg_mem_release(chip);
+	/*print battery log*/
+	asus_soc = get_prop_capacity_asus(chip);
+	prcapacity = get_prop_capacity(chip);
+	prsoc = get_sram_prop_now(chip, FG_DATA_BATT_SOC)/100;
+	prvoltage = fg_data[FG_DATA_CPRED_VOLTAGE].value/1000;
+	prcurrent = -(fg_data[FG_DATA_CURRENT].value/1000);
+	prtemp1 = get_sram_prop_now(chip, FG_DATA_BATT_TEMP)/10;
+	prtemp2 = get_sram_prop_now(chip, FG_DATA_BATT_TEMP)%10;
+	charge_soc = mapping_charge[adc_temp];
+	discharge_soc = mapping_discharge[adc_temp];
 
+	if(chip->update_sram_data_flag == 1){
+		printk(KERN_ERR "[BAT][Ser]report Capacity ==>%d %%, Q_UI: %d %%, FCC:%dmAh, BMS:%d %%, V:%dmV, Cur:%dmA, Temp:%d.%dC, VADC: %lld, CP: %d %%, DP: %d %%, Status: %s\n",
+			asus_soc, prcapacity,
+			get_prop_batt_full_charge(), prsoc, prvoltage, prcurrent,
+			prtemp1, prtemp2, adc_temp, charge_soc, discharge_soc,
+			battery_status_str[chip->status]);
+		ASUSEvtlog("[BAT][Ser]report Capacity ==>%d %%, Q_UI: %d %%, FCC:%dmAh, BMS:%d %%, V:%dmV, Cur:%dmA, Temp:%d.%dC, VADC: %lld, CP: %d %%, DP: %d %%, Status: %s\n",
+			asus_soc, prcapacity,
+			get_prop_batt_full_charge(), prsoc, prvoltage, prcurrent,
+			prtemp1, prtemp2, adc_temp, charge_soc, discharge_soc,
+			battery_status_str[chip->status]);
+		chip->update_sram_data_flag = 0;
+
+		if (chip->power_supply_registered)
+			power_supply_changed(&chip->bms_psy);
+	}
+
+	if(chip->asus_force_update_flag == 1){
+		printk(KERN_ERR "[BAT][Ser]report Capacity ==>%d %%, Q_UI: %d %%, FCC:%dmAh, BMS:%d %%, V:%dmV, Cur:%dmA, Temp:%d.%dC, VADC: %lld, CP: %d %%, DP: %d %%, Status: %s\n",
+			asus_soc, prcapacity,
+			get_prop_batt_full_charge(), prsoc, prvoltage, prcurrent,
+			prtemp1, prtemp2, adc_temp, charge_soc, discharge_soc,
+			battery_status_str[chip->status]);
+		ASUSEvtlog("[BAT][Ser]report Capacity ==>%d %%, Q_UI: %d %%, FCC:%dmAh, BMS:%d %%, V:%dmV, Cur:%dmA, Temp:%d.%dC, VADC: %lld, CP: %d %%, DP: %d %%, Status: %s\n",
+			asus_soc, prcapacity,
+			get_prop_batt_full_charge(), prsoc, prvoltage, prcurrent,
+			prtemp1, prtemp2, adc_temp, charge_soc, discharge_soc,
+			battery_status_str[chip->status]);
+		chip->asus_force_update_flag = 0;
+
+		if (chip->power_supply_registered)
+			power_supply_changed(&chip->bms_psy);
+
+		get_current_time(&chip->last_asus_force_update_time);
+		asus_next_time_flag = 1;
+	}
+
+	//[+++]print battery log according to different power level BSP YuXiang
+	if (prcapacity > 50)
+		fg_sram_update_period_ms = 60000;
+	else if (prcapacity > 10)
+		fg_sram_update_period_ms = 30000;
+	else
+		fg_sram_update_period_ms = 10000;
+	//[---]print battery log according to different power level BSP YuXiang
+
+	fg_mem_release(chip);
 	/* Backup the registers whenever no error happens during update */
 	if (fg_reset_on_lockup && !chip->ima_error_handling) {
 		if (!rc) {
@@ -2735,6 +2952,8 @@ wait:
 			resched_ms = SRAM_PERIOD_NO_ID_UPDATE_MS;
 		goto out;
 	}
+	chip->update_sram_data_flag = 1;
+	printk("[%s]update_sram_data_flag(%d)\n",__func__, chip->update_sram_data_flag);
 	rc = update_sram_data(chip, &resched_ms);
 
 out:
@@ -2984,7 +3203,9 @@ static void update_cycle_count(struct work_struct *work)
 	}
 	batt_soc = reg[2];
 
-	if (chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+	if (chip->status == POWER_SUPPLY_STATUS_CHARGING
+			|| chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING
+			|| chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING) {
 		/* Find out which bucket the SOC falls in */
 		bucket = batt_soc / BUCKET_SOC_PCT;
 
@@ -3098,6 +3319,8 @@ static void slope_limiter_work(struct work_struct *work)
 	batt_temp = get_sram_prop_now(chip, FG_DATA_BATT_TEMP);
 
 	if (chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING ||
 			chip->status == POWER_SUPPLY_STATUS_FULL) {
 		if (batt_temp < chip->slope_limit_temp)
 			status = LOW_TEMP_CHARGE;
@@ -3789,7 +4012,9 @@ static int fg_cap_learning_check(struct fg_chip *chip)
 	unsigned int cc_pc_100 = FULL_PERCENT_28BIT;
 
 	mutex_lock(&chip->learning_data.learning_lock);
-	if (chip->status == POWER_SUPPLY_STATUS_CHARGING
+	if ((chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)
 				&& !chip->learning_data.active
 				&& chip->batt_aging_mode == FG_AGING_CC) {
 		if (chip->learning_data.learned_cc_uah == 0) {
@@ -3888,7 +4113,9 @@ static int fg_cap_learning_check(struct fg_chip *chip)
 				goto fail;
 			}
 		}
-	} else if ((chip->status != POWER_SUPPLY_STATUS_CHARGING)
+	} else if (((chip->status != POWER_SUPPLY_STATUS_CHARGING) ||
+					chip->status != POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+					chip->status != POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)
 				&& chip->learning_data.active) {
 		if (fg_debug_mask & FG_AGING)
 			pr_info("capacity learning stopped\n");
@@ -4021,6 +4248,8 @@ static void status_change_work(struct work_struct *work)
 	unsigned long current_time = 0;
 	int cc_soc, batt_soc, rc, capacity = get_prop_capacity(chip);
 	bool batt_missing = is_battery_missing(chip);
+	u8 buffer[3];
+	int resume_soc_raw = settings[FG_MEM_RESUME_SOC].value;
 
 	if (batt_missing) {
 		if (fg_debug_mask & FG_STATUS)
@@ -4033,8 +4262,15 @@ static void status_change_work(struct work_struct *work)
 		schedule_work(&chip->esr_extract_config_work);
 	}
 
+	fg_mem_lock(chip);
+	rc = fg_mem_read(chip, buffer, BATTERY_SOC_REG, 3, 1, 0);
+	fg_mem_release(chip);
+
+	pr_info("capacity = %d, chip status = %d, chip health = %d, bsoc=%d, resume=%d\n",
+		capacity, chip->status, chip->health, buffer[2], resume_soc_raw);
+
 	if (chip->status == POWER_SUPPLY_STATUS_FULL) {
-		if (capacity >= 99 && chip->hold_soc_while_full
+		if (capacity >= 99 && chip->hold_soc_while_full && (buffer[2] > resume_soc_raw)
 				&& chip->health == POWER_SUPPLY_HEALTH_GOOD) {
 			if (fg_debug_mask & FG_STATUS)
 				pr_info("holding soc at 100\n");
@@ -4045,7 +4281,9 @@ static void status_change_work(struct work_struct *work)
 		}
 	}
 	if (chip->status == POWER_SUPPLY_STATUS_FULL ||
-			chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+			chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING) {
 		if (!chip->vbat_low_irq_enabled &&
 				!chip->use_vbat_low_empty_soc) {
 			enable_irq(chip->batt_irq[VBATT_LOW].irq);
@@ -4138,7 +4376,9 @@ static void status_change_work(struct work_struct *work)
 
 		if ((chip->wa_flag & USE_CC_SOC_REG) &&
 				chip->bad_batt_detection_en &&
-				chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+				(chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)) {
 			chip->sw_cc_soc_data.init_sys_soc = capacity;
 			chip->sw_cc_soc_data.init_cc_soc = cc_soc;
 			if (fg_debug_mask & FG_STATUS)
@@ -4578,6 +4818,7 @@ static int fg_power_get_property(struct power_supply *psy,
 {
 	struct fg_chip *chip = container_of(psy, struct fg_chip, bms_psy);
 	bool vbatt_low_sts;
+	int unused=0;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_BATTERY_TYPE:
@@ -4589,7 +4830,12 @@ static int fg_power_get_property(struct power_supply *psy,
 			val->strval = chip->batt_type;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
-		val->intval = get_prop_capacity(chip);
+		if (chip->charge_full){
+			cancel_work_sync(&chip->charge_full_work);
+			pr_info("force to do charge_full_work\n");
+			schedule_work(&chip->charge_full_work);
+		}
+		val->intval = get_prop_capacity_asus(chip);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_RAW:
 		val->intval = get_sram_prop_now(chip, FG_DATA_BATT_SOC);
@@ -4598,7 +4844,8 @@ static int fg_power_get_property(struct power_supply *psy,
 		val->intval = get_sram_prop_now(chip, FG_DATA_VINT_ERR);
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		val->intval = get_sram_prop_now(chip, FG_DATA_CURRENT);
+		update_sram_data(chip, &unused); // update currect every time we read
+		val->intval = get_sram_prop_now(chip, FG_DATA_CURRENT) * (-1); //use positive current for charging
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		val->intval = get_sram_prop_now(chip, FG_DATA_VOLTAGE);
@@ -4765,6 +5012,8 @@ static int fg_power_set_property(struct power_supply *psy,
 		}
 		break;
 	case POWER_SUPPLY_PROP_STATUS:
+		if(val->intval != chip->prev_status)
+			pr_info("set battery status = %d\n", val->intval);
 		chip->prev_status = chip->status;
 		chip->status = val->intval;
 		schedule_work(&chip->status_change_work);
@@ -4909,8 +5158,9 @@ static void update_esr_value(struct work_struct *work)
 
 	if (!chip->esr_strict_filter) {
 		if ((prop.intval == POWER_SUPPLY_CHARGE_TYPE_TAPER &&
-				chip->status == POWER_SUPPLY_STATUS_CHARGING) ||
-			(chip->status == POWER_SUPPLY_STATUS_FULL)) {
+				(chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)) || (chip->status == POWER_SUPPLY_STATUS_FULL)) {
 			esr_value = ESR_STRICT_VALUE;
 			rc = fg_mem_write(chip, (u8 *)&esr_value,
 					MAXRSCHANGE_REG, 8,
@@ -4922,8 +5172,9 @@ static void update_esr_value(struct work_struct *work)
 				chip->esr_strict_filter = true;
 		}
 	} else if ((prop.intval != POWER_SUPPLY_CHARGE_TYPE_TAPER &&
-				chip->status == POWER_SUPPLY_STATUS_CHARGING) ||
-			(chip->status == POWER_SUPPLY_STATUS_DISCHARGING)) {
+				(chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+					chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)) || (chip->status == POWER_SUPPLY_STATUS_DISCHARGING)) {
 		esr_value = ESR_DEFAULT_VALUE;
 		rc = fg_mem_write(chip, (u8 *)&esr_value, MAXRSCHANGE_REG, 8,
 				ESR_VALUE_OFFSET, 0);
@@ -5257,6 +5508,8 @@ static irqreturn_t fg_vbatt_low_handler(int irq, void *_chip)
 		if (vbatt_low_sts) {
 			if (fg_debug_mask & FG_IRQS)
 				pr_info("Vbatt is low\n");
+			printk("[BAT] Low Voltage\n");
+			ASUSEvtlog("[BAT] Low Voltage\n");
 			disable_irq_wake(chip->batt_irq[VBATT_LOW].irq);
 			disable_irq_nosync(chip->batt_irq[VBATT_LOW].irq);
 			chip->vbat_low_irq_enabled = false;
@@ -5271,7 +5524,9 @@ static irqreturn_t fg_vbatt_low_handler(int irq, void *_chip)
 		goto out;
 	}
 
-	if (chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+	if (chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+			chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING) {
 		if (fg_get_vbatt_status(chip, &vbatt_low_sts))
 			goto out;
 		if (!vbatt_low_sts && chip->vbat_low_irq_enabled) {
@@ -5413,6 +5668,7 @@ static irqreturn_t fg_soc_irq_handler(int irq, void *_chip)
 
 	schedule_work(&chip->update_esr_work);
 
+	pr_info("charge_full=%d\n", chip->charge_full);
 	if (chip->charge_full)
 		schedule_work(&chip->charge_full_work);
 
@@ -5808,7 +6064,9 @@ static void rslow_comp_work(struct work_struct *work)
 
 	battery_soc_1b = get_battery_soc_raw(chip) >> 16;
 	if (battery_soc_1b > chip->rslow_comp.chg_rslow_comp_thr
-			&& chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+			&& (chip->status == POWER_SUPPLY_STATUS_CHARGING ||
+				chip->status == POWER_SUPPLY_STATUS_QUICK_CHARGING ||
+				chip->status == POWER_SUPPLY_STATUS_NOT_QUICK_CHARGING)) {
 		if (!chip->rslow_comp.active)
 			fg_rslow_charge_comp_set(chip);
 	} else {
@@ -6467,6 +6725,12 @@ wait:
 			< settings[FG_MEM_VBAT_EST_DIFF].value * 1000;
 	profiles_same = memcmp(chip->batt_profile, data,
 					PROFILE_COMPARE_LEN) == 0;
+	pr_info("v_current_pred = %d, v = %d, threshold = %d, profiles_same = %d, batt_empty = %d\n",
+				fg_data[FG_DATA_CPRED_VOLTAGE].value,
+				fg_data[FG_DATA_VOLTAGE].value,
+				settings[FG_MEM_VBAT_EST_DIFF].value * 1000,
+				profiles_same ? 1 : 0,
+				fg_is_batt_empty(chip) ? 1 : 0);
 	if (reg & PROFILE_INTEGRITY_BIT) {
 		fg_cap_learning_load_data(chip);
 		if (vbat_in_range && !fg_is_batt_empty(chip) && profiles_same) {
@@ -7068,7 +7332,7 @@ static int fg_of_init(struct fg_chip *chip)
 				* FULL_SOC_RAW, FULL_CAPACITY);
 	OF_READ_SETTING(FG_MEM_RESUME_SOC, "resume-soc-raw", rc, 1);
 	OF_READ_SETTING(FG_MEM_IRQ_VOLT_EMPTY, "irq-volt-empty-mv", rc, 1);
-	OF_READ_SETTING(FG_MEM_VBAT_EST_DIFF, "vbat-estimate-diff-mv", rc, 1);
+	OF_READ_SETTING(FG_MEM_VBAT_EST_DIFF, "fg-vbat-estimate-diff-mv", rc, 1);
 	OF_READ_SETTING(FG_MEM_DELTA_SOC, "fg-delta-soc", rc, 1);
 	OF_READ_SETTING(FG_MEM_BATT_LOW, "fg-vbatt-low-threshold", rc, 1);
 	OF_READ_SETTING(FG_MEM_THERM_DELAY, "fg-therm-delay-us", rc, 1);
@@ -8681,6 +8945,11 @@ done:
 	fg_cleanup(chip);
 }
 
+static ssize_t batt_switch_name(struct switch_dev *sdev, char *buf)
+{
+	return sprintf(buf, "C11P1603-G-02-0001-5.14.44.1847\n");
+}
+
 static int fg_probe(struct spmi_device *spmi)
 {
 	struct device *dev = &(spmi->dev);
@@ -8705,6 +8974,9 @@ static int fg_probe(struct spmi_device *spmi)
 		pr_err("Can't allocate fg_chip\n");
 		return -ENOMEM;
 	}
+
+	fg_dev = chip;
+	mapping_init();
 
 	chip->spmi = spmi;
 	chip->dev = &(spmi->dev);
@@ -8909,6 +9181,7 @@ static int fg_probe(struct spmi_device *spmi)
 		}
 	}
 
+        fg_dev = chip;
 	/* Fake temperature till the actual temperature is read */
 	chip->last_good_temp = 250;
 
@@ -8918,6 +9191,12 @@ static int fg_probe(struct spmi_device *spmi)
 	memset(chip->batt_info, INT_MAX, sizeof(chip->batt_info));
 
 	schedule_work(&chip->init_work);
+
+	/* register switch device for battery version info */
+	chip->batt_sdev.name = "battery";
+	chip->batt_sdev.print_name = batt_switch_name;
+	if (switch_dev_register(&chip->batt_sdev) < 0)
+		pr_err("fail to register battery switch\n");
 
 	pr_info("FG Probe success - FG Revision DIG:%d.%d ANA:%d.%d PMIC subtype=%d\n",
 		chip->revision[DIG_MAJOR], chip->revision[DIG_MINOR],
@@ -8983,12 +9262,38 @@ static void check_and_update_sram_data(struct fg_chip *chip)
 		&chip->update_sram_data, msecs_to_jiffies(time_left * 1000));
 }
 
+static unsigned long asus_next_time = 0;
+static void asus_force_update(struct fg_chip *chip)
+{
+	unsigned long current_time = 0, time_left;
+	int zero = 0;
+
+	get_current_time(&current_time);
+
+	if (asus_next_time_flag) {
+		//rtc after 600s will update
+		asus_next_time = chip->last_asus_force_update_time + 600;
+		asus_next_time_flag = 0;
+	}
+
+	if (asus_next_time > current_time)
+		time_left = asus_next_time - current_time;
+	else {
+		time_left = 0;
+		chip->asus_force_update_flag = 1;
+		pr_info("asus force update sram data\n");
+		update_sram_data(chip, &zero);
+	}
+}
+
 static int fg_suspend(struct device *dev)
 {
 	struct fg_chip *chip = dev_get_drvdata(dev);
 
+	/*
 	if (!chip->sw_rbias_ctrl)
 		return 0;
+	*/
 
 	cancel_delayed_work(&chip->update_temp_work);
 	cancel_delayed_work(&chip->update_sram_data);
@@ -9000,9 +9305,12 @@ static int fg_resume(struct device *dev)
 {
 	struct fg_chip *chip = dev_get_drvdata(dev);
 
+	/*
 	if (!chip->sw_rbias_ctrl)
 		return 0;
+	*/
 
+	asus_force_update(chip);
 	check_and_update_sram_data(chip);
 	return 0;
 }

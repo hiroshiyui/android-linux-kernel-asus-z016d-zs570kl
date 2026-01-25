@@ -116,9 +116,21 @@
 
 #define QUSB2PHY_LVL_SHIFTER_CMD_ID	0x1B
 
+unsigned int tune1;
+module_param(tune1, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(tune1, "QUSB PHY TUNE1");
+
 unsigned int tune2;
 module_param(tune2, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(tune2, "QUSB PHY TUNE2");
+
+unsigned int tune3;
+module_param(tune3, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(tune3, "QUSB PHY TUNE3");
+
+unsigned int tune4;
+module_param(tune4, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(tune4, "QUSB PHY TUNE4");
 
 struct qusb_phy {
 	struct usb_phy		phy;
@@ -731,7 +743,8 @@ static int qusb_phy_init(struct usb_phy *phy)
 {
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
 	int ret, reset_val = 0;
-	bool is_se_clk = true;
+	int eye_dia_test = 0;
+        bool is_se_clk = true;
 
 	dev_dbg(phy->dev, "%s\n", __func__);
 
@@ -813,8 +826,16 @@ static int qusb_phy_init(struct usb_phy *phy)
 
 		pr_debug("%s(): Programming TUNE2 parameter as:%x\n", __func__,
 				qphy->tune2_val);
-		writel_relaxed(qphy->tune2_val,
+		qphy->tune2_val = 0x23;          // ASUS_BSP : use 0x23 , not use 0xc3
+                writel_relaxed(qphy->tune2_val,
 				qphy->base + QUSB2PHY_PORT_TUNE2);
+	}
+
+	if (tune1) {
+		pr_debug("%s(): (modparam) TUNE1 val:0x%02x\n",
+						__func__, tune1);
+		writel_relaxed(tune1,
+				qphy->base + QUSB2PHY_PORT_TUNE1);
 	}
 
 	/* If tune2 modparam set, override tune2 value */
@@ -825,9 +846,33 @@ static int qusb_phy_init(struct usb_phy *phy)
 				qphy->base + QUSB2PHY_PORT_TUNE2);
 	}
 
+	if (tune3) {
+		pr_debug("%s(): (modparam) TUNE3 val:0x%02x\n",
+						__func__, tune3);
+		writel_relaxed(tune3,
+				qphy->base + QUSB2PHY_PORT_TUNE3);
+	}
+
+	if (tune4) {
+		pr_debug("%s(): (modparam) TUNE4 val:0x%02x\n",
+						__func__, tune4);
+		writel_relaxed(tune4,
+				qphy->base + QUSB2PHY_PORT_TUNE4);
+	}
 	/* ensure above writes are completed before re-enabling PHY */
 	wmb();
-
+        /* ASUS_BSP : eye diagram verify(value read log) +++ */
+        pr_debug("[Eye] After Qualcomm change register again +++\n");
+        eye_dia_test = (u8)readl_relaxed(qphy->base + QUSB2PHY_PORT_TUNE1);
+        pr_info("[Eye] %s(): 0x%02x value = 0x%02x\n",__func__,QUSB2PHY_PORT_TUNE1,eye_dia_test);
+        eye_dia_test = (u8)readl_relaxed(qphy->base + QUSB2PHY_PORT_TUNE2);
+        pr_info("[Eye] %s(): 0x%02x value = 0x%02x\n",__func__,QUSB2PHY_PORT_TUNE2,eye_dia_test);
+        eye_dia_test = (u8)readl_relaxed(qphy->base + QUSB2PHY_PORT_TUNE3);
+        pr_info("[Eye] %s(): 0x%02x value = 0x%02x\n",__func__,QUSB2PHY_PORT_TUNE3,eye_dia_test);
+        eye_dia_test = (u8)readl_relaxed(qphy->base + QUSB2PHY_PORT_TUNE4);
+        pr_info("[Eye] %s(): 0x%02x value = 0x%02x\n",__func__,QUSB2PHY_PORT_TUNE4,eye_dia_test);
+        pr_debug("[Eye] After Qualcomm change register again ---\n");
+        /* ASUS_BSP : eye diagram verify(value read log) --- */
 	/* Enable the PHY */
 	writel_relaxed(CLAMP_N_EN | FREEZIO_N,
 		qphy->base + QUSB2PHY_PORT_POWERDOWN);

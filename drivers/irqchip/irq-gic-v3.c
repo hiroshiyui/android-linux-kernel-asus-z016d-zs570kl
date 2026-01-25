@@ -36,6 +36,9 @@
 #include "irq-gic-common.h"
 #include "irqchip.h"
 
+int gic_irq_cnt;
+struct gic_resume_irq_data gic_resume_irq[8];
+
 struct redist_region {
 	void __iomem		*redist_base;
 	phys_addr_t		phys_base;
@@ -357,12 +360,44 @@ static int gic_suspend(void)
 	return 0;
 }
 
+//ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57 260
+static int rmnet_irq_flag_rx = 0;
+int rmnet_irq_flag_function_rx(void)
+{
+    if( rmnet_irq_flag_rx == 1 ) {
+        rmnet_irq_flag_rx = 0;
+        return 1;
+    }
+
+    return 0;
+}
+EXPORT_SYMBOL(rmnet_irq_flag_function_rx);
+
+static int rmnet_irq_flag_rx_260 = 0; 
+int rmnet_irq_flag_function_rx_260(void)
+{
+    if( rmnet_irq_flag_rx_260 == 1 ) {
+        rmnet_irq_flag_rx_260 = 0; 
+        return 1;
+    }    
+
+    return 0;
+}
+EXPORT_SYMBOL(rmnet_irq_flag_function_rx_260);
+//ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57 260
 static void gic_show_resume_irq(struct gic_chip_data *gic)
 {
 	unsigned int i;
 	u32 enabled;
 	u32 pending[32];
 	void __iomem *base = gic_data_dist_base(gic);
+	int j;
+
+	for (j = 0;j < 8; j++) {
+		gic_resume_irq[j].gic_resume_irq_num = 0;
+		memset(gic_resume_irq[j].gic_resume_irq_name, 0, sizeof(gic_resume_irq[j].gic_resume_irq_name));
+	}
+	gic_irq_cnt = 0;
 
 	if (!msm_show_resume_irq_mask)
 		return;
@@ -386,7 +421,26 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 			name = desc->action->name;
 
 		pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+                //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+                if(i == 57){
+                    rmnet_irq_flag_rx = 1;
+                    //printk("%s: [data] Johnny test\n", __func__);
+                }
+                //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 57
+                //ASUS_BSP +++ Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 260
+                if(irq == 167){
+                    rmnet_irq_flag_rx_260 = 1;
+                    //printk("%s: [data] Johnny test\n", __func__);
+                }
+                //ASUS_BSP --- Johnny [Qcom][PS][][ADD]Print first IP address log when IRQ 260
+		if (gic_irq_cnt < 8) {
+			gic_resume_irq[gic_irq_cnt].gic_resume_irq_num = irq;
+			strncpy(gic_resume_irq[gic_irq_cnt].gic_resume_irq_name, name, sizeof(gic_resume_irq[gic_irq_cnt].gic_resume_irq_name));
+		}
+		gic_irq_cnt++;
 	}
+	if (gic_irq_cnt >= 8)
+		gic_irq_cnt = 7;
 }
 
 static void gic_resume_one(struct gic_chip_data *gic)

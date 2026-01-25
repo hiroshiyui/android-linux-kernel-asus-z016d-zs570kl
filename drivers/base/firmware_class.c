@@ -368,6 +368,10 @@ static int fw_get_filesystem_firmware(struct device *device,
 	if (!path)
 		return false;
 
+
+	//dev_warn(device, "firmware, attempted to load %s\n",buf->fw_id); //for debug
+
+
 	for (i = 0; i < ARRAY_SIZE(fw_path); i++) {
 		struct file *file;
 
@@ -376,6 +380,17 @@ static int fw_get_filesystem_firmware(struct device *device,
 			continue;
 
 		snprintf(path, PATH_MAX, "%s/%s", fw_path[i], buf->fw_id);
+
+		/* ASUS BSP : For Change ADSP FW loading path to system/etc/firmware */
+		if (!strncmp(buf->fw_id , "adsp", 4)) {
+			snprintf(path, PATH_MAX, "%s/%s", "/system/etc/firmware", buf->fw_id);
+			dev_err(device, "[Kernel] Try to load firmware : %s \n", path);
+		}
+		/* ASUS BSP ---*/
+
+		if (!strncmp(buf->fw_id , "slpi", 4)) {
+			snprintf(path, PATH_MAX, "%s/%s", "/system/etc/firmware", buf->fw_id);
+		}
 
 		file = filp_open(path, O_RDONLY, 0);
 		if (IS_ERR(file))

@@ -133,9 +133,9 @@
 	rpm-regulator-ldoa3 {
 		status = "okay";
 		pm8994_l3: regulator-l3 {
-			regulator-min-microvolt = <850000>;
-			regulator-max-microvolt = <850000>;
-			qcom,init-voltage = <850000>;
+			regulator-min-microvolt = <1050000>;
+			regulator-max-microvolt = <1050000>;
+			qcom,init-voltage = <1050000>;
 			status = "okay";
 		};
 	};
@@ -153,8 +153,8 @@
 	rpm-regulator-ldoa6 {
 		status = "okay";
 		pm8994_l6: regulator-l6 {
-			regulator-min-microvolt = <1200000>;
-			regulator-max-microvolt = <1200000>;
+			regulator-min-microvolt = <1050000>;
+			regulator-max-microvolt = <1050000>;
 			qcom,init-voltage = <1200000>;
 			status = "okay";
 		};
@@ -193,9 +193,9 @@
 	rpm-regulator-ldoa11 {
 		status = "okay";
 		pm8994_l11: regulator-l11 {
-			regulator-min-microvolt = <1150000>;
-			regulator-max-microvolt = <1150000>;
-			qcom,init-voltage = <1150000>;
+			regulator-min-microvolt = <1050000>;
+			regulator-max-microvolt = <1050000>;
+			qcom,init-voltage = <1050000>;
 			status = "okay";
 		};
 	};
@@ -259,9 +259,9 @@
 	rpm-regulator-ldoa17 {
 		status = "okay";
 		pm8994_l17: regulator-l17 {
-			regulator-min-microvolt = <2500000>;
-			regulator-max-microvolt = <2500000>;
-			qcom,init-voltage = <2500000>;
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			qcom,init-voltage = <3000000>;
 			status = "okay";
 		};
 	};
@@ -293,9 +293,9 @@
 	rpm-regulator-ldoa19 {
 		status = "okay";
 		pm8994_l19: regulator-l19 {
-			regulator-min-microvolt = <3000000>;
-			regulator-max-microvolt = <3000000>;
-			qcom,init-voltage = <3000000>;
+			regulator-min-microvolt = <3050000>;
+			regulator-max-microvolt = <3050000>;
+			qcom,init-voltage = <3050000>;
 			status = "okay";
 		};
 	};
@@ -389,8 +389,8 @@
 	rpm-regulator-ldoa27 {
 		status = "okay";
 		pm8994_l27: regulator-l27 {
-			regulator-min-microvolt = <1000000>;
-			regulator-max-microvolt = <1000000>;
+			regulator-min-microvolt = <1250000>;
+			regulator-max-microvolt = <1250000>;
 			qcom,init-voltage = <1000000>;
 			status = "okay";
 		};
@@ -2231,7 +2231,7 @@
 };
 
 &pmi8994_charger {
-	otg-parent-supply = <&pmi8994_boost_5v>;
+	parent-supply = <&pmi8994_boost_5v>;
 	smbcharger_charger_otg: qcom,smbcharger-boost-otg {
 		regulator-name = "smbcharger_charger_otg";
 	};

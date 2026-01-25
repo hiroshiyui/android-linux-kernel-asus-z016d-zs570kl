@@ -54,6 +54,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
 
+#define RESERVE_BLOCKS 8192
+
 static struct proc_dir_entry *ext4_proc_root;
 static struct kset *ext4_kset;
 static struct ext4_lazy_init *ext4_li_info;
@@ -5158,7 +5160,11 @@ static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
 	ext4_fsblk_t overhead = 0, resv_blocks;
 	u64 fsid;
 	s64 bfree;
-	resv_blocks = EXT4_C2B(sbi, atomic64_read(&sbi->s_resv_clusters));
+
+	if (!strcmp(sb->s_id, "dm-0"))
+		resv_blocks = RESERVE_BLOCKS;
+	else
+		resv_blocks = EXT4_C2B(sbi, atomic64_read(&sbi->s_resv_clusters));
 
 	if (!test_opt(sb, MINIX_DF))
 		overhead = sbi->s_overhead;

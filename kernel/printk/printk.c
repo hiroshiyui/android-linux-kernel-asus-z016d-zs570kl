@@ -46,14 +46,19 @@
 #include <linux/irq_work.h>
 #include <linux/utsname.h>
 #include <linux/ctype.h>
-
 #include <asm/uaccess.h>
-
+#include <linux/irqchip/arm-gic-v3.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
 #include "console_cmdline.h"
 #include "braille.h"
+
+extern int gic_irq_cnt;
+extern struct gic_resume_irq_data gic_resume_irq[8];
+extern unsigned int pm_pwrcs_ret;
+extern struct gic_resume_irq_data gpio_resume_irq[8];
+extern int gpio_irq_cnt;
 
 #ifdef CONFIG_EARLY_PRINTK_DIRECT
 extern void printascii(char *);
@@ -429,9 +434,17 @@ static int log_store(int facility, int level,
 	struct printk_log *msg;
 	u32 size, pad_len;
 	u16 trunc_msg_len = 0;
+        int this_cpu = smp_processor_id();
+        char tbuf[50];
+        unsigned tlen;
+
+        if (console_suspended == 0)
+                tlen = snprintf(tbuf, sizeof(tbuf), "(%x)[%d:%s]", this_cpu, current->pid, current->comm);
+        else
+                tlen = snprintf(tbuf, sizeof(tbuf), "%x)", this_cpu);
 
 	/* number of '\0' padding bytes to next message */
-	size = msg_used_size(text_len, dict_len, &pad_len);
+	size = msg_used_size(text_len + tlen, dict_len, &pad_len);
 
 	if (log_make_free_space(size)) {
 		/* truncate the message if it is too long for empty buffer */
@@ -455,7 +468,11 @@ static int log_store(int facility, int level,
 
 	/* fill message */
 	msg = (struct printk_log *)(log_buf + log_next_idx);
-	memcpy(log_text(msg), text, text_len);
+        memcpy(log_text(msg), tbuf, tlen);
+        if (tlen + text_len > LOG_LINE_MAX)
+                text_len = LOG_LINE_MAX - tlen;
+        memcpy(log_text(msg) + tlen, text, text_len);
+        text_len += tlen;
 	msg->text_len = text_len;
 	if (trunc_msg_len) {
 		memcpy(log_text(msg) + text_len, trunc_msg, trunc_msg_len);
@@ -1015,6 +1032,7 @@ static inline void boot_delay_msec(int level)
 static bool printk_time = IS_ENABLED(CONFIG_PRINTK_TIME);
 module_param_named(time, printk_time, bool, S_IRUGO | S_IWUSR);
 
+int boot_after_60sec = 0;
 static size_t print_time(u64 ts, char *buf)
 {
 	unsigned long rem_nsec;
@@ -1026,6 +1044,9 @@ static size_t print_time(u64 ts, char *buf)
 
 	if (!buf)
 		return snprintf(NULL, 0, "[%5lu.000000] ", (unsigned long)ts);
+
+	if (boot_after_60sec == 0 && ts >= 60)
+		boot_after_60sec = 1;
 
 	return sprintf(buf, "[%5lu.%06lu] ",
 		       (unsigned long)ts, rem_nsec / 1000);
@@ -2058,6 +2079,27 @@ void suspend_console(void)
 
 void resume_console(void)
 {
+	int i;
+
+	if (pm_pwrcs_ret) {
+		if (gic_irq_cnt > 0) {
+			for (i = 0; i < gic_irq_cnt; i++) {
+				printk("Wakeup from IRQ %d %s\n", gic_resume_irq[i].gic_resume_irq_num , gic_resume_irq[i].gic_resume_irq_name);
+				ASUSEvtlog("[PM] IRQ triggered: %d %s", gic_resume_irq[i].gic_resume_irq_num , gic_resume_irq[i].gic_resume_irq_name);
+			}
+			gic_irq_cnt = 0;
+		}
+		if (gpio_irq_cnt > 0) {
+			for (i = 0; i < gpio_irq_cnt; i++) {
+				printk("Wakeup from GPIO %d %s\n", gpio_resume_irq[i].gic_resume_irq_num , gpio_resume_irq[i].gic_resume_irq_name);
+				ASUSEvtlog("[PM] GPIO triggered: %d %s", gpio_resume_irq[i].gic_resume_irq_num, gpio_resume_irq[i].gic_resume_irq_name);
+			}
+			gpio_irq_cnt = 0;  //clear log count
+		}
+		pm_pwrcs_ret = 0;
+	}
+	ASUSEvtlog("[UTS] System Resume.\n");
+
 	if (!console_suspend_enabled)
 		return;
 	down_console_sem();

@@ -218,8 +218,7 @@ int dwc3_gadget_resize_tx_fifos(struct dwc3 *dwc, struct dwc3_ep *dep)
 	tmp = ((max_packet + mdwidth) * mult) + mdwidth;
 	fifo_size = DIV_ROUND_UP(tmp, mdwidth);
 	dep->fifo_depth = fifo_size;
-	fifo_size |= (dwc3_readl(dwc->regs, DWC3_GTXFIFOSIZ(0)) & 0xffff0000)
-						+ (dwc->last_fifo_depth << 16);
+	fifo_size |= (dwc->last_fifo_depth << 16);
 	dwc->last_fifo_depth += (fifo_size & 0xffff);
 
 	dev_dbg(dwc->dev, "%s ep_num:%d last_fifo_depth:%04x fifo_depth:%d\n",
@@ -2589,6 +2588,7 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 	} while (1);
 
 	dwc->gadget.xfer_isr_count++;
+        dwc->traffic_mon_count++;
 
 	if (usb_endpoint_xfer_isoc(dep->endpoint.desc) &&
 			list_empty(&dep->req_queued)) {
@@ -2792,6 +2792,7 @@ static void dwc3_disconnect_gadget(struct dwc3 *dwc)
 		spin_lock(&dwc->lock);
 	}
 	dwc->gadget.xfer_isr_count = 0;
+        dwc->traffic_mon_count = 0;
 }
 
 static void dwc3_suspend_gadget(struct dwc3 *dwc)

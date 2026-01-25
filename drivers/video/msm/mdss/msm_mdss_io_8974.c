@@ -1035,8 +1035,6 @@ static void mdss_dsi_8996_phy_config(struct mdss_dsi_ctrl_pdata *ctrl)
 	int j, off, ln, cnt, ln_off;
 	char *ip;
 	void __iomem *base;
-	u32 data;
-	struct mdss_panel_info *pinfo;
 
 	pd = &(((ctrl->panel_data).panel_info.mipi).dsi_phy_db);
 
@@ -1120,13 +1118,7 @@ static void mdss_dsi_8996_phy_config(struct mdss_dsi_ctrl_pdata *ctrl)
 			mdss_dsi_8996_pll_source_standalone(ctrl);
 	}
 
-	pinfo = &ctrl->panel_data.panel_info;
-	if (!(pinfo->allow_phy_power_off) && (pinfo->type == MIPI_CMD_PANEL)) {
-		data = MIPI_INP(ctrl->phy_io.base + DSIPHY_CMN_CTRL_0);
-		MIPI_OUTP(ctrl->phy_io.base + DSIPHY_CMN_CTRL_0, data | 0x7f);
-	} else {
-		MIPI_OUTP(ctrl->phy_io.base + DSIPHY_CMN_CTRL_0, 0x7f);
-	}
+	MIPI_OUTP(ctrl->phy_io.base + DSIPHY_CMN_CTRL_0, 0x7f);
 	wmb(); /* make sure registers committed */
 }
 
@@ -2329,7 +2321,7 @@ int mdss_dsi_post_clkoff_cb(void *priv,
 				ctrl->core_power = false;
 			}
 		}
-
+#if 0
 		/*
 		 * temp workaround until framework issues pertaining to LP2
 		 * power state transitions are fixed. For now, we internally
@@ -2339,6 +2331,7 @@ int mdss_dsi_post_clkoff_cb(void *priv,
 		if (mdss_dsi_is_panel_on_lp(pdata))
 			mdss_dsi_panel_power_ctrl(pdata,
 				MDSS_PANEL_POWER_LP2);
+#endif
 	}
 	return rc;
 }
@@ -2389,6 +2382,7 @@ int mdss_dsi_pre_clkon_cb(void *priv,
 			}
 
 		}
+#if 0
 		/*
 		 * temp workaround until framework issues pertaining to LP2
 		 * power state transitions are fixed. For now, if we intend to
@@ -2397,6 +2391,7 @@ int mdss_dsi_pre_clkon_cb(void *priv,
 		 */
 		if (mdss_dsi_is_panel_on_ulp(pdata))
 			mdss_dsi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_LP1);
+#endif
 	}
 	/* Disable dynamic clock gating*/
 	if (ctrl->mdss_util->dyn_clk_gating_ctrl)

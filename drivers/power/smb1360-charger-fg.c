@@ -1415,7 +1415,7 @@ static struct power_supply *get_parallel_psy(struct smb1360_chip *chip)
 {
 	if (chip->parallel_psy)
 		return chip->parallel_psy;
-	chip->parallel_psy = power_supply_get_by_name("usb-parallel");
+	chip->parallel_psy = power_supply_get_by_name("parallel");
 	if (!chip->parallel_psy)
 		pr_debug("parallel charger not found\n");
 	return chip->parallel_psy;
